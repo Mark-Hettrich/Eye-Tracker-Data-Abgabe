@@ -8,12 +8,35 @@ knitr::opts_chunk$set(
   echo = FALSE,
   warning = FALSE,
   message = FALSE,
-  error = FALSE
+  error = FALSE,
+  results = "asis"
 )
 ```
+<style>
+table {
+  width: 100%;
+  table-layout: fixed;
+  border-collapse: collapse;
+}
+
+th, td {
+  white-space: normal !important;
+  word-wrap: break-word;
+  overflow-wrap: break-word;
+  vertical-align: top;
+  padding: 4px;
+}
+</style>
 
 ```{r}
 library(here)
+library(dplyr)
+library(tidyr)
+library(purrr)
+library(tibble)
+library(ggplot2)
+library(lme4)
+library(mgcv)
 ```
 
 ```{r}
@@ -49,10 +72,21 @@ info_check <- encap_chp %>%
 missing_mech <- mech_check %>% filter(n == 0)
 missing_info <- info_check %>% filter(n == 0)
 
-mech_check
-info_check
-missing_mech
-missing_info
+#mech_check
+#info_check
+
+knitr::kable(
+  missing_mech
+,
+  format = "html",
+  table.attr = 'style="width:100%; table-layout: fixed;"'
+)
+
+knitr::kable(
+  missing_info,
+  format = "html",
+  table.attr = 'style="width:100%; table-layout: fixed;"'
+)
 ```
 
 
@@ -714,13 +748,16 @@ res_encap_chp_fullfit <- run_fullfits_encap_chp(
 # OUTPUTS
 # =========================================================
 
-round_df_4(res_encap_chp_fullfit$fullfit_all)
-round_df_4(res_encap_chp_fullfit$problem_counts)
-round_df_4(res_encap_chp_fullfit$problem_fits_only)
-```
-Experiment Encapsulation & Discursive Labels:
-Hier stößt das Modell mit aggregierten AOIs an Designbedingte und numerische rank-deficiency und Konvergenzprobleme. Da in einigen AOIs nicht alle Konditionen gesehen werden, kann das Modell diese nicht schätzen. Damit ist der Ansatz der aggregierten AOIs hier nicht sauber einsetzbar, und es empfiehlt sich, das Normierte Modell mit einzelnen AOIs zu verwenden. 
+#round_df_4(res_encap_chp_fullfit$fullfit_all)
+#round_df_4(res_encap_chp_fullfit$problem_counts)
+#round_df_4(res_encap_chp_fullfit$problem_fits_only)
 
+knitr::kable(
+  round_df_4(res_encap_chp_fullfit$problem_counts),
+  format = "html",
+  table.attr = 'style="width:100%; table-layout: fixed;"'
+)
+```
 
 
 

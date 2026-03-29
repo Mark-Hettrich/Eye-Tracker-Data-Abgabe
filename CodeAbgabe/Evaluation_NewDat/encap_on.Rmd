@@ -7,12 +7,37 @@ knitr::opts_chunk$set(
   echo = FALSE,
   warning = FALSE,
   message = FALSE,
-  error = FALSE
+  error = FALSE,
+  results = "asis"
 )
 ```
+<style>
+table {
+  width: 100%;
+  table-layout: fixed;
+  border-collapse: collapse;
+}
+
+th, td {
+  white-space: normal !important;
+  word-wrap: break-word;
+  overflow-wrap: break-word;
+  vertical-align: top;
+  padding: 4px;
+}
+</style>
 
 ```{r}
 library(here)
+library(dplyr)
+library(tidyr)
+library(purrr)
+library(tibble)
+library(ggplot2)
+library(lme4)
+library(mgcv)
+library(knitr)
+library(kableExtra)
 ```
 
 ```{r}
@@ -77,9 +102,15 @@ res <- check_full_3way(
   aoi = "AOI"
 )
 
-res$combo_check
-res$missing_combos
-res$per_aoi_summary
+#res$combo_check
+#res$missing_combos
+#res$per_aoi_summary
+
+knitr::kable(
+  res$per_aoi_summary,
+  format = "html",
+  table.attr = 'style="width:100%; table-layout: fixed;"'
+)
 ```
 
 
@@ -805,9 +836,15 @@ res_encap_on_fullfit <- run_fullfits_encap_on(
 # OUTPUTS
 # =========================================================
 
-round_df_4(res_encap_on_fullfit$fullfit_all)
-round_df_4(res_encap_on_fullfit$problem_counts)
-round_df_4(res_encap_on_fullfit$problem_fits_only)
+#round_df_4(res_encap_on_fullfit$fullfit_all)
+#round_df_4(res_encap_on_fullfit$problem_counts)
+#round_df_4(res_encap_on_fullfit$problem_fits_only)
+
+knitr::kable(
+  round_df_4(res_encap_on_fullfit$problem_counts),
+  format = "html",
+  table.attr = 'style="width:100%; table-layout: fixed;"'
+)
 ```
 Experiment Anaphoric Encapsulation: Keine Probleme im Full Fit
 
@@ -1286,14 +1323,18 @@ res_encap_on_topicloo <- run_topicloo_encap_on(
 # OUTPUTS
 # =========================================================
 
-round_df_4(res_encap_on_topicloo$loo_all)
-round_df_4(res_encap_on_topicloo$loo_summary)
-round_df_4(res_encap_on_topicloo$problem_counts)
-round_df_4(res_encap_on_topicloo$problem_fits_only)
+#round_df_4(res_encap_on_topicloo$loo_all)
+#round_df_4(res_encap_on_topicloo$loo_summary)
+#round_df_4(res_encap_on_topicloo$problem_counts)
+#round_df_4(res_encap_on_topicloo$problem_fits_only)
+
+knitr::kable(
+  round_df_4(res_encap_on_topicloo$loo_summary),
+  format = "html",
+  table.attr = 'style="width:100%; table-layout: fixed;"'
+)
 ```
-Experiment Anaphoric Encapsulation:
-Im TRT Topic LOO gibt es keine Fit Probleme
-Die Holdout-Evaluation ergab für alle AOI-Cluster numerisch stabile Modellschätzungen ohne Konvergenzprobleme, Warnungen oder Hinweise auf mangelnde Identifizierbarkeit. Die prädiktive Güte unterschied sich jedoch deutlich zwischen den Clustern. Die beste Generalisierungsleistung zeigte das Modell für den Cluster 4, 5, 6, gefolgt von 7, 9. Deutlich höhere Vorhersagefehler ergaben sich für die Cluster 2, 3, 8 und insbesondere 1. Die Bias-Werte lagen insgesamt vergleichsweise nahe bei 0, sodass die Modelle meist keine starke systematische Über- oder Unterschätzung zeigten. Die Hauptschwäche in den schwächeren Clustern lag daher weniger in einer systematischen Verzerrung als in einer geringen Vorhersagepräzision.
+
 
 *TRT: Participant LOO mit Fit Problemen*
 ```{r}
@@ -1770,13 +1811,18 @@ res_encap_on_participantloo <- run_participantloo_encap_on(
 # OUTPUTS
 # =========================================================
 
-round_df_4(res_encap_on_participantloo$loo_all)
-round_df_4(res_encap_on_participantloo$loo_summary)
-round_df_4(res_encap_on_participantloo$problem_counts)
-round_df_4(res_encap_on_participantloo$problem_fits_only)
+#round_df_4(res_encap_on_participantloo$loo_all)
+#round_df_4(res_encap_on_participantloo$loo_summary)
+#round_df_4(res_encap_on_participantloo$problem_counts)
+#round_df_4(res_encap_on_participantloo$problem_fits_only)
+
+knitr::kable(
+  round_df_4(res_encap_on_participantloo$loo_summary),
+  format = "html",
+  table.attr = 'style="width:100%; table-layout: fixed;"'
+)
 ```
-Experiment Anaphoric Encapsulation:
-Im Output mit 78 Holdout-Fits pro AOI-Cluster sind die Modelle zunächst technisch unauffällig, da weder Fit-Fehler noch Hessian-, Konvergenz- oder Rank-Deficiency-Probleme auftraten. Die Unterschiede betreffen also allein die Vorhersagegüte. Am besten schneidet erneut der Cluster 4, 5, 6 ab, mit den kleinsten RMSE- und MAE-Werten und damit der besten Generalisierungsleistung auf neue Daten. Es folgen 7, 9 und danach 2, 3, während 8 und besonders 1 die höchsten Vorhersagefehler zeigen. Die mean bias-Werte sind in allen Clustern negativ, was im Mittel auf eine Tendenz zur Unterschätzung hindeutet. Gleichzeitig sind die median bias-Werte in allen Clustern positiv, was zeigt, dass in mehr als der Hälfte der Folds eher Überschätzung vorlag. Dass Mittelwert und Median hier unterschiedliche Vorzeichen haben, spricht dafür, dass einzelne stärkere negative Abweichungen den Mittelwert nach unten ziehen, obwohl die typische Fold-Tendenz eher leicht positiv ist. Insgesamt liegt die Hauptaussage aber weniger in einer starken systematischen Verzerrung als in der sehr unterschiedlichen Vorhersagepräzision zwischen den AOI-Clustern.
+
 
 
 *FRT Full Data Fit Problems*
@@ -2268,12 +2314,17 @@ res_encap_on_fullfit_frt <- run_fullfits_encap_on_frt(
 # OUTPUTS
 # =========================================================
 
-round_df_4(res_encap_on_fullfit_frt$fullfit_all)
-round_df_4(res_encap_on_fullfit_frt$problem_counts)
-round_df_4(res_encap_on_fullfit_frt$problem_fits_only)
+#round_df_4(res_encap_on_fullfit_frt$fullfit_all)
+#round_df_4(res_encap_on_fullfit_frt$problem_counts)
+#round_df_4(res_encap_on_fullfit_frt$problem_fits_only)
+
+knitr::kable(
+  round_df_4(res_encap_on_fullfit_frt$problem_counts),
+  format = "html",
+  table.attr = 'style="width:100%; table-layout: fixed;"'
+)
 ```
-Experiment Anaphoric Encapsulation:
-Keine Probleme auf Full Data Fit
+
 
 
 *FRT: Topic LOO + Fit Problems*
@@ -2811,13 +2862,18 @@ res_encap_on_topicloo_frt <- run_topicloo_encap_on_frt(
 # OUTPUTS
 # =========================================================
 
-round_df_4(res_encap_on_topicloo_frt$loo_all)
-round_df_4(res_encap_on_topicloo_frt$loo_summary)
-round_df_4(res_encap_on_topicloo_frt$problem_counts)
-round_df_4(res_encap_on_topicloo_frt$problem_fits_only)
+#round_df_4(res_encap_on_topicloo_frt$loo_all)
+#round_df_4(res_encap_on_topicloo_frt$loo_summary)
+#round_df_4(res_encap_on_topicloo_frt$problem_counts)
+#round_df_4(res_encap_on_topicloo_frt$problem_fits_only)
+
+knitr::kable(
+  round_df_4(res_encap_on_topicloo_frt$loo_summary),
+  format = "html",
+  table.attr = 'style="width:100%; table-layout: fixed;"'
+)
 ```
-Experiment Anaphoric Encapsulation:
-Im FRT-Output mit Topic-LOO sind die Modelle insgesamt methodisch weitgehend unauffällig: Es gibt keine Fit-, Hessian-, Konvergenz- oder Rank-Deficiency-Probleme, nur vereinzelt singuläre Random Effects, was auf eine teilweise sehr geringe Random-Effects-Varianz in einzelnen Folds hindeutet, aber keinen gravierenden Modellfehler darstellt. Inhaltlich zeigt sich wieder ein klarer Trend in der Vorhersagegüte: Einige AOI-Cluster generalisieren deutlich besser als andere, wobei vor allem der mittlere Clusterbereich am besten abschneidet, während die Randcluster höhere Fehler aufweisen. Beim Bias ergibt sich kein völlig einheitliches Bild, da je nach Cluster sowohl leichte Über- als auch Unterschätzung vorkommt und sich Mittelwert und Median teils unterscheiden. Insgesamt spricht der Output damit weniger für systematische Verzerrung als für unterschiedlich präzise Vorhersagen zwischen den AOI-Clustern.
+
 
 
 *FRT: Participant LOO + Fit Problems*
@@ -3355,13 +3411,19 @@ res_encap_on_participantloo_frt <- run_participantloo_encap_on_frt(
 # OUTPUTS
 # =========================================================
 
-round_df_4(res_encap_on_participantloo_frt$loo_all)
-round_df_4(res_encap_on_participantloo_frt$loo_summary)
-round_df_4(res_encap_on_participantloo_frt$problem_counts)
-round_df_4(res_encap_on_participantloo_frt$problem_fits_only)
+#round_df_4(res_encap_on_participantloo_frt$loo_all)
+#round_df_4(res_encap_on_participantloo_frt$loo_summary)
+#round_df_4(res_encap_on_participantloo_frt$problem_counts)
+#round_df_4(res_encap_on_participantloo_frt$problem_fits_only)
+
+knitr::kable(
+  round_df_4(res_encap_on_participantloo_frt$loo_summary),
+  format = "html",
+  table.attr = 'style="width:100%; table-layout: fixed;"'
+)
+
 ```
-Experiment Anaphoric Encapsulation:
-Im FRT-Output mit Participant-LOO sind die Modelle methodisch komplett unauffällig, da über alle Cluster hinweg weder Fit- noch Hessian-, Singularitäts-, Konvergenz- oder Rank-Deficiency-Probleme auftreten. Die Unterschiede liegen also wieder allein in der Vorhersagegüte. Dabei reicht der mean RMSE grob von etwa 376 bis 1330, der mean MAE von etwa 269 bis 1192, was zeigt, dass sich die Generalisierungsleistung zwischen den AOI-Clustern deutlich unterscheidet. Einige Cluster zeigen also klar kleinere, andere deutlich größere Vorhersagefehler. Die mean bias-Werte sind durchweg negativ, also im Mittel eher eine Tendenz zur Unterschätzung, liegen aber meist in einem moderaten Bereich. Gleichzeitig sind mehrere median bias-Werte positiv, was darauf hindeutet, dass einzelne stärkere negative Abweichungen den Mittelwert nach unten ziehen, obwohl die typische Fold-Tendenz eher leicht positiv sein kann. Insgesamt spricht der Output damit für stabile Modelle, aber für eine je nach AOI-Cluster klar unterschiedliche Vorhersagepräzision.
+
 
 *RRT: Full Data Fit Problems*
 ```{r}
@@ -3881,12 +3943,17 @@ res_encap_on_fullfit_rrt <- run_fullfits_encap_on_rrt(
 # OUTPUTS
 # =========================================================
 
-round_df_4(res_encap_on_fullfit_rrt$fullfit_all)
-round_df_4(res_encap_on_fullfit_rrt$problem_counts)
-round_df_4(res_encap_on_fullfit_rrt$problem_fits_only)
+#round_df_4(res_encap_on_fullfit_rrt$fullfit_all)
+#round_df_4(res_encap_on_fullfit_rrt$problem_counts)
+#round_df_4(res_encap_on_fullfit_rrt$problem_fits_only)
+
+knitr::kable(
+  round_df_4(res_encap_on_fullfit_rrt$problem_counts),
+  format = "html",
+  table.attr = 'style="width:100%; table-layout: fixed;"'
+)
 ```
-Experiment Anaphoric Encapsulation:
-singular_random_effects bei aggr_level 1
+
 
 *RRT: Topic LOO*
 ```{r}
@@ -4457,19 +4524,16 @@ res_encap_on_topicloo_rrt <- run_topicloo_encap_on_rrt(
 # OUTPUTS
 # =========================================================
 
-round_df_4(res_encap_on_topicloo_rrt$loo_all)
-round_df_4(res_encap_on_topicloo_rrt$loo_summary)
-round_df_4(res_encap_on_topicloo_rrt$problem_counts)
-round_df_4(res_encap_on_topicloo_rrt$problem_fits_only)
+#round_df_4(res_encap_on_topicloo_rrt$loo_all)
+#round_df_4(res_encap_on_topicloo_rrt$loo_summary)
+#round_df_4(res_encap_on_topicloo_rrt$problem_counts)
+#round_df_4(res_encap_on_topicloo_rrt$problem_fits_only)
+knitr::kable(
+  round_df_4(res_encap_on_topicloo_rrt$loo_summary),
+  format = "html",
+  table.attr = 'style="width:100%; table-layout: fixed;"'
+)
 ```
-Experiment Anaphoric Encapsulation:
-1	singular_random_effects	4		
-7, 9	singular_random_effects	3		
-2, 3	singular_random_effects	1		
-4, 5, 6	singular_random_effects	1		
-8	nonposdef_hessian	1		
-8	nonzero_convergence	1		
-Im Topic-LOO des encap_on-Experiments wirkt die RRT-Evaluation erneut deutlich schwieriger als bei TRT und FRT. Zwar gibt es keine fehlgeschlagenen Fits und keine Rank-Deficiency, aber in mehreren Clustern treten singuläre Random Effects auf, und in einem Cluster zusätzlich ein non-positive-definite Hessian, ein Konvergenzproblem und Warnungen. Das spricht dafür, dass die Modelle formal meist noch schätzbar sind, in einzelnen Teilmodellen aber an Stabilitätsgrenzen kommen. Auch die Vorhersagegüte schwankt merklich, mit mean RMSE-Werten grob zwischen 606 und 999 und mean MAE-Werten zwischen 384 und 707. Besonders wichtig sind hier die Bias-Werte: Die mean bias-Werte sind in allen Clustern negativ, ungefähr im Bereich von -86 bis -6, und deuten damit durchgängig auf eine Tendenz zur Unterschätzung hin. Auch die median bias-Werte sind überall negativ, etwa zwischen -96 und -19, sodass diese Unterschätzung nicht nur auf einzelne Ausreißer zurückgeht, sondern insgesamt recht konsistent erscheint. Insgesamt zeigt der Output also ein eher heterogenes und teilweise instabiles Bild, bei dem neben den teils hohen Fehlerwerten vor allem die systematische Unterschätzung auffällt.
 
 
 *RRT: Participant LOO  +  Fit Problems*
@@ -5041,13 +5105,18 @@ res_encap_on_participantloo_rrt <- run_participantloo_encap_on_rrt(
 # OUTPUTS
 # =========================================================
 
-round_df_4(res_encap_on_participantloo_rrt$loo_all)
-round_df_4(res_encap_on_participantloo_rrt$loo_summary)
-round_df_4(res_encap_on_participantloo_rrt$problem_counts)
-round_df_4(res_encap_on_participantloo_rrt$problem_fits_only)
+#round_df_4(res_encap_on_participantloo_rrt$loo_all)
+#round_df_4(res_encap_on_participantloo_rrt$loo_summary)
+#round_df_4(res_encap_on_participantloo_rrt$problem_counts)
+#round_df_4(res_encap_on_participantloo_rrt$problem_fits_only)
+
+knitr::kable(
+  round_df_4(res_encap_on_participantloo_rrt$loo_summary),
+  format = "html",
+  table.attr = 'style="width:100%; table-layout: fixed;"'
+)
 ```
-Experiment Anaphoric Encapsulation:
-Im Participant-LOO des encap_on-Experiments bleibt die RRT-Evaluation methodisch insgesamt unauffällig, da es keine fehlgeschlagenen Fits, keine Hessian-, Konvergenz- oder Rank-Deficiency-Probleme und auch keine Warnungen gibt. Auffällig ist aber, dass in einigen Clustern weiterhin häufig singuläre Random Effects auftreten, teils sehr oft, was darauf hindeutet, dass die Random-Effects-Struktur nicht überall gleichermaßen stabil getragen wird. Die Vorhersagegüte variiert erneut sichtbar, mit mean RMSE-Werten ungefähr zwischen 499 und 862 und mean MAE-Werten zwischen 361 und 697. Für die inhaltliche Einordnung sind hier vor allem die Bias-Werte wichtig: Die mean bias-Werte sind in allen Clustern negativ, etwa zwischen -142 und -26, was im Mittel auf eine systematische Unterschätzung hindeutet. Gleichzeitig sind die median bias-Werte in allen Clustern positiv, ungefähr zwischen 27 und 97. Das zeigt, dass die typische Fold-Tendenz eher leicht positiv ist, der Mittelwert aber durch stärkere negative Abweichungen nach unten gezogen wird. Insgesamt spricht der Output also für formal stabile, aber in der Vorhersage recht heterogene Modelle, bei denen vor allem die auseinanderlaufenden Bias-Maße auffallen.
+
 
 *0er: Participant LOO*
 ```{r}
@@ -5691,14 +5760,18 @@ res_encap_on_rrt_zero_participantloo <- run_participantloo_encap_on_rrt_zero(
 # OUTPUTS
 # =========================================================
 
-round_df_4(res_encap_on_rrt_zero_participantloo$loo_all)
-round_df_4(res_encap_on_rrt_zero_participantloo$loo_summary)
-round_df_4(res_encap_on_rrt_zero_participantloo$problem_counts)
-round_df_4(res_encap_on_rrt_zero_participantloo$problem_fits_only)
+#round_df_4(res_encap_on_rrt_zero_participantloo$loo_all)
+#round_df_4(res_encap_on_rrt_zero_participantloo$loo_summary)
+#round_df_4(res_encap_on_rrt_zero_participantloo$problem_counts)
+#round_df_4(res_encap_on_rrt_zero_participantloo$problem_fits_only)
+
+knitr::kable(
+  round_df_4(res_encap_on_rrt_zero_participantloo$loo_summary),
+  format = "html",
+  table.attr = 'style="width:100%; table-layout: fixed;"'
+)
 ```
-Experiment Anaphoric Encapsulation:
-In der 0er-Analyse der RRT zeigt sich zunächst, dass die Zero-Inflation-Komponente methodisch stabil läuft: Es gibt keine Fit-Fehler, keine Konvergenzprobleme, keine Rank-Deficiency und keine Warnungen, nur in manchen Clustern wieder singuläre Random Effects. 
-Die mittlere Kalibrierung der Nullwahrscheinlichkeiten ist insgesamt sehr gut. Die vorhergesagte Nullwahrscheinlichkeit stimmt in allen Clustern praktisch exakt mit dem beobachteten Nullanteil überein, und auch der calibration gap liegt durchgehend bei 0 oder nahezu 0. Die Modelle erfassen damit die durchschnittliche 0er-Rate der jeweiligen Cluster sehr präzise. Unterschiede zeigen sich jedoch in der Fähigkeit, einzelne Null- und Positivfälle voneinander zu trennen. Diese Trennleistung variiert deutlich zwischen den Clustern, was sich an accuracy, balanced accuracy sowie an recall_zero und recall_positive zeigt. In einigen Clustern ist die Klassifikation vergleichsweise ausgewogen, in anderen deutlich einseitiger. Besonders auffällig ist der Cluster mit nahezu keinem Nullanteil: Dort sind accuracy und Brier-Wert zwar nahezu perfekt, diese Werte sind inhaltlich aber nur eingeschränkt aussagekräftig, da es faktisch kaum Nullfälle zu identifizieren gibt. Insgesamt deutet Output 1 somit auf eine sehr gute mittlere Kalibrierung der Zero-Inflation-Komponente hin, bei zugleich clusterabhängig unterschiedlicher Trennschärfe zwischen Null- und Positivfällen.
+
 
 *0er Topic LOO*
 ```{r}
@@ -6342,14 +6415,18 @@ res_encap_on_rrt_zero_topicloo <- run_topicloo_encap_on_rrt_zero(
 # OUTPUTS
 # =========================================================
 
-round_df_4(res_encap_on_rrt_zero_topicloo$loo_all)
-round_df_4(res_encap_on_rrt_zero_topicloo$loo_summary)
-round_df_4(res_encap_on_rrt_zero_topicloo$problem_counts)
-round_df_4(res_encap_on_rrt_zero_topicloo$problem_fits_only)
+#round_df_4(res_encap_on_rrt_zero_topicloo$loo_all)
+#round_df_4(res_encap_on_rrt_zero_topicloo$loo_summary)
+#round_df_4(res_encap_on_rrt_zero_topicloo$problem_counts)
+#round_df_4(res_encap_on_rrt_zero_topicloo$problem_fits_only)
+
+knitr::kable(
+  round_df_4(res_encap_on_rrt_zero_topicloo$loo_summary),
+  format = "html",
+  table.attr = 'style="width:100%; table-layout: fixed;"'
+)
 ```
-Experiment Anaphoric Encapsulation:
-0er Topic LOO analyse: 
-Die mittlere Kalibrierung der Nullwahrscheinlichkeiten ist weiterhin gut, da die vorhergesagte Nullwahrscheinlichkeit in allen Clustern nah am beobachteten Nullanteil liegt und der calibration gap mit etwa -0.014 bis 0.021 klein bleibt. Die durchschnittliche 0er-Rate wird also auch hier insgesamt angemessen getroffen. Gleichzeitig treten in einzelnen Clustern zusätzliche Auffälligkeiten in der Modellschätzung auf, insbesondere singuläre Random Effects und in einem Cluster außerdem ein Hessian-Problem, ein Konvergenzproblem sowie Warnungen. Diese Befunde sprechen dafür, dass die Zero-Inflation-Komponente inhaltlich zwar brauchbar kalibriert ist, einzelne Teilmodelle aber numerisch weniger stabil sind als im ersten Output. Die eigentliche Trennleistung zwischen Null- und Positivfällen ist auch hier clusterabhängig und sollte nicht allein aus accuracy-Werten abgeleitet werden, sondern aus dem Zusammenspiel von balanced accuracy, recall_zero und recall_positive. Insgesamt spricht Output 2 daher ebenfalls für eine gute mittlere Kalibrierung der Nullwahrscheinlichkeiten, aber für eine je nach Cluster unterschiedlich starke und teils diagnostisch eingeschränkte Trennung zwischen Null- und Positivfällen.
+
 
 
 **Residualanalyse**
@@ -7041,12 +7118,47 @@ res_trt_residuals_encap_on <- run_trt_residual_analysis_encap_on(
 # TABELLEN
 # =========================================================
 
-round_df_4(res_trt_residuals_encap_on$residual_summary)
-round_df_4(res_trt_residuals_encap_on$problem_counts)
-round_df_4(res_trt_residuals_encap_on$problem_fits_only)
+#round_df_4(res_trt_residuals_encap_on$residual_summary)
+#round_df_4(res_trt_residuals_encap_on$problem_counts)
+#round_df_4(res_trt_residuals_encap_on$problem_fits_only)
+
+
+knitr::kable(
+  round_df_4(res_trt_residuals_encap_on$problem_counts),
+  format = "html",
+  table.attr = 'style="width:100%; table-layout: fixed;"'
+)
+
+
+tab <-   round_df_4(res_trt_residuals_encap_on$residual_summary) %>% select(- formula)
+
+
+print_split_table <- function(tab, id_cols = 1:3, chunk_size = 6, font_size = 8) {
+  id_names <- names(tab)[id_cols]
+  other_names <- names(tab)[-id_cols]
+
+  split_index <- ceiling(seq_along(other_names) / chunk_size)
+  groups <- split(other_names, split_index)
+
+  for (i in seq_along(groups)) {
+    cols_i <- c(id_names, groups[[i]])
+    tab_i <- tab[, cols_i, drop = FALSE]
+
+    print(
+      knitr::kable(
+        tab_i,
+        format = "html",
+        escape = FALSE
+      ) %>%
+        kable_styling(full_width = TRUE, font_size = font_size)
+    )
+
+    cat("<br><br>")
+  }
+}
+print_split_table(tab)
 ```
-Experiment Anaphoric Encapsulation:
-In der DHARMa-Analyse ergibt sich insgesamt kein Bild eines generellen Modellzusammenbruchs, aber auch keine vollständig unauffällige Residualdiagnostik. Die Modelle wurden zunächst technisch stabil geschätzt, ohne Fit-Fehler, Hessian- oder Konvergenzprobleme. Auch die globaleren DHARMa-Tests auf Uniformität und Dispersion fallen überwiegend unauffällig aus, was gegen eine grobe Verteilungsfehlanpassung spricht. Gleichzeitig zeigen einzelne Teilmodelle signifikante Ausreißer- oder Quantilsignale. Solche Befunde deuten eher auf lokale Missanpassungen hin, also darauf, dass bestimmte Bereiche der Verteilung oder einzelne Beobachtungen nicht vollständig adäquat erfasst werden, ohne dass deshalb automatisch das gesamte Modell verworfen werden müsste. Da in einzelnen Diagnosen auch deutlichere quantile Abweichungen sichtbar werden können, sollten die betreffenden Teilmodelle jedoch nicht als vollständig assumptionskonform dargestellt werden. Insgesamt spricht die Residualanalyse damit eher für punktuelle Verletzungen einzelner Modellannahmen als für einen flächigen, gravierenden Missfit.
+
 
 
 *FRT DHARMa*
@@ -7735,12 +7847,48 @@ res_frt_residuals_encap_on <- run_frt_residual_analysis_encap_on(
 # TABELLEN
 # =========================================================
 
-round_df_4(res_frt_residuals_encap_on$residual_summary)
-round_df_4(res_frt_residuals_encap_on$problem_counts)
-round_df_4(res_frt_residuals_encap_on$problem_fits_only)
+#round_df_4(res_frt_residuals_encap_on$residual_summary)
+#round_df_4(res_frt_residuals_encap_on$problem_counts)
+#round_df_4(res_frt_residuals_encap_on$problem_fits_only)
+
+
+knitr::kable(
+  round_df_4(res_frt_residuals_encap_on$problem_counts),
+  format = "html",
+  table.attr = 'style="width:100%; table-layout: fixed;"'
+)
+
+
+
+tab <-   round_df_4(res_frt_residuals_encap_on$residual_summary) %>% select(- formula)
+
+
+print_split_table <- function(tab, id_cols = 1:3, chunk_size = 6, font_size = 8) {
+  id_names <- names(tab)[id_cols]
+  other_names <- names(tab)[-id_cols]
+
+  split_index <- ceiling(seq_along(other_names) / chunk_size)
+  groups <- split(other_names, split_index)
+
+  for (i in seq_along(groups)) {
+    cols_i <- c(id_names, groups[[i]])
+    tab_i <- tab[, cols_i, drop = FALSE]
+
+    print(
+      knitr::kable(
+        tab_i,
+        format = "html",
+        escape = FALSE
+      ) %>%
+        kable_styling(full_width = TRUE, font_size = font_size)
+    )
+
+    cat("<br><br>")
+  }
+}
+print_split_table(tab)
 ```
-Experiment Anaphoric Encapsulation:
-Die DHARMa-Analyse der FRT-Modelle ergibt insgesamt ein gemischtes Bild. Die Residualdiagnostik ist nicht in allen AOI-Clustern unauffällig, sondern weist clusterabhängig verschiedene Arten von Abweichungen auf. In einzelnen Teilmodellen zeigen sich signifikante Hinweise auf Ausreißer, in anderen fallen Uniformitäts-, Dispersions- oder Quantiltests signifikant aus. Dies spricht dafür, dass die Residuen nicht in allen Clustern vollständig mit den zugrunde gelegten Modellannahmen vereinbar sind und zum Teil noch systematische Reststruktur verbleibt. Gleichzeitig ergibt sich kein einheitliches Muster eines gravierenden globalen Missfits, da nicht in allen Clustern dieselben Diagnosemaße auffällig sind und einzelne Tests auch unauffällig bleiben. Insgesamt deutet die Residualanalyse somit auf punktuelle bis clusterabhängig auch deutlichere Missanpassungen hin. Die FRT-Modelle können daher inhaltlich interpretiert werden, ihre Ergebnisse sollten jedoch unter Berücksichtigung dieser diagnostischen Einschränkungen eingeordnet werden.
+
 
 
 

@@ -8,12 +8,35 @@ knitr::opts_chunk$set(
   echo = FALSE,
   warning = FALSE,
   message = FALSE,
-  error = FALSE
+  error = FALSE,
+  results = "asis"
 )
 ```
+<style>
+table {
+  width: 100%;
+  table-layout: fixed;
+  border-collapse: collapse;
+}
+
+th, td {
+  white-space: normal !important;
+  word-wrap: break-word;
+  overflow-wrap: break-word;
+  vertical-align: top;
+  padding: 4px;
+}
+</style>
 
 ```{r}
 library(here)
+library(dplyr)
+library(tidyr)
+library(purrr)
+library(tibble)
+library(ggplot2)
+library(lme4)
+library(mgcv)
 ```
 
 ```{r}
@@ -71,13 +94,26 @@ check_aoi_subject <- ambiguity %>%
 missing_aoi_subject <- check_aoi_subject %>%
   filter(n == 0)
 
-check_aoi_ambiguity
-check_aoi_reference
-check_aoi_subject
+#check_aoi_ambiguity
+#check_aoi_reference
+#check_aoi_subject
 
-missing_aoi_ambiguity
-missing_aoi_reference
-missing_aoi_subject
+
+knitr::kable(
+  missing_aoi_ambiguity,
+  format = "html",
+  table.attr = 'style="width:100%; table-layout: fixed;"'
+)
+knitr::kable(
+  missing_aoi_reference,
+  format = "html",
+  table.attr = 'style="width:100%; table-layout: fixed;"'
+)
+knitr::kable(
+  missing_aoi_subject,
+  format = "html",
+  table.attr = 'style="width:100%; table-layout: fixed;"'
+)
 ```
 
 *TRT: Fit-Probleme full Data*
@@ -807,10 +843,15 @@ res_ambiguity_fullfit <- run_fullfits_ambiguity(
 # OUTPUTS
 # =========================================================
 
-round_df_4(res_ambiguity_fullfit$fullfit_all)
-round_df_4(res_ambiguity_fullfit$problem_counts)
-round_df_4(res_ambiguity_fullfit$problem_fits_only)
+#round_df_4(res_ambiguity_fullfit$fullfit_all)
+#round_df_4(res_ambiguity_fullfit$problem_counts)
+#round_df_4(res_ambiguity_fullfit$problem_fits_only)
+
+knitr::kable(
+  round_df_4(res_ambiguity_fullfit$problem_counts),
+  format = "html",
+  table.attr = 'style="width:100%; table-layout: fixed;"'
+)
 ```
-Experiment Ambiguity:
-Hier stößt das Modell mit aggregierten AOIs an Designbedingte und numerische rank-deficiency. Da in einigen AOIs nicht alle Konditionen gesehen werden, kann das Modell diese nicht schätzen. Damit ist der Ansatz der aggregierten AOIs hier nicht sauber einsetzbar, und es empfiehlt sich, das Normierte Modell mit einzelnen AOIs zu verwenden. 
+
 

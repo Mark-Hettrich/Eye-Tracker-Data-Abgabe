@@ -2,17 +2,43 @@
 title: "discourse_particles"
 output: html_document
 ---
+
 ```{r setup, include=FALSE}
 knitr::opts_chunk$set(
   echo = FALSE,
   warning = FALSE,
   message = FALSE,
-  error = FALSE
+  error = FALSE,
+  results = "asis"
 )
 ```
+<style>
+table {
+  width: 100%;
+  table-layout: fixed;
+  border-collapse: collapse;
+}
+
+th, td {
+  white-space: normal !important;
+  word-wrap: break-word;
+  overflow-wrap: break-word;
+  vertical-align: top;
+  padding: 4px;
+}
+</style>
 
 ```{r}
 library(here)
+library(dplyr)
+library(tidyr)
+library(purrr)
+library(tibble)
+library(ggplot2)
+library(lme4)
+library(mgcv)
+library(knitr)
+library(kableExtra)
 ```
 
 ```{r}
@@ -437,12 +463,19 @@ res_discourse_particles_fullfit <- run_fullfits_discourse_particles(
 # OUTPUTS
 # =========================================================
 
-round_df_4(res_discourse_particles_fullfit$fullfit_all)
-round_df_4(res_discourse_particles_fullfit$problem_counts)
-round_df_4(res_discourse_particles_fullfit$problem_fits_only)
+#round_df_4(res_discourse_particles_fullfit$fullfit_all)
+
+#round_df_4(res_discourse_particles_fullfit$problem_fits_only)
+
+knitr::kable(
+  round_df_4(res_discourse_particles_fullfit$problem_counts),
+  format = "html",
+  table.attr = 'style="width:100%; table-layout: fixed;"'
+)
 ```
-Experiment Por Ello Incluso: 
-Wir beobachten keine Fit Probleme
+
+
+
 *TRT: Topic LOO + Fit Probleme*
 ```{r}
 library(dplyr)
@@ -869,14 +902,19 @@ res_discourse_particles_topicloo <- run_topicloo_discourse_particles(
 # OUTPUTS
 # =========================================================
 
-round_df_4(res_discourse_particles_topicloo$loo_all)
-round_df_4(res_discourse_particles_topicloo$loo_summary)
-round_df_4(res_discourse_particles_topicloo$problem_counts)
-round_df_4(res_discourse_particles_topicloo$problem_fits_only)
+#round_df_4(res_discourse_particles_topicloo$loo_all)
+#round_df_4(res_discourse_particles_topicloo$loo_summary)
+#round_df_4(res_discourse_particles_topicloo$problem_counts)
+#round_df_4(res_discourse_particles_topicloo$problem_fits_only)
+
+
+knitr::kable(
+  round_df_4(res_discourse_particles_topicloo$loo_summary),
+  format = "html",
+  table.attr = 'style="width:100%; table-layout: fixed;"'
+)
 ```
-Experiment Por Ello Incluso: 
-Im TRT Topic LOO beobachten wir keine Fit Probleme.
-Wir beobachten allerdings recht stark varriierende mean_rmse, von 509-1344, in den verschiedenen Modellen. Der MAE folgt dem gleichen Muster. Der Bias selber sieht nicht so schlimm aus, und varriiert von -80ms bis +80ms, ist damit also auch nicht sonderlich überzeugend, jedoch besser als unsere RMSE und MAE. Das deutet darauf hin, dass unsere Predictions stark streuuen, aber im Mittel gegen die richtige Richtung gehen. 
+
 
 
 *TRT: Participant LOO + Fit Probleme*
@@ -1305,14 +1343,19 @@ res_discourse_particles_participantloo <- run_participantloo_discourse_particles
 # OUTPUTS
 # =========================================================
 
-round_df_4(res_discourse_particles_participantloo$loo_all)
-round_df_4(res_discourse_particles_participantloo$loo_summary)
-round_df_4(res_discourse_particles_participantloo$problem_counts)
-round_df_4(res_discourse_particles_participantloo$problem_fits_only)
+#round_df_4(res_discourse_particles_participantloo$loo_all)
+#round_df_4(res_discourse_particles_participantloo$loo_summary)
+#round_df_4(res_discourse_particles_participantloo$problem_counts)
+#round_df_4(res_discourse_particles_participantloo$problem_fits_only)
+
+knitr::kable(
+  round_df_4(res_discourse_particles_participantloo$loo_summary),
+  format = "html",
+  table.attr = 'style="width:100%; table-layout: fixed;"'
+)
 ```
-Experiment Por Ello Incluso: 
-Im TRT Particiapnt LOO beobachten wir keine Fit Probleme.
-Wir beobachten allerdings recht stark varriierende mean_rmse, von 350-900, in den verschiedenen Modellen. Der MAE folgt dem gleichen Muster. Der Bias selber hier nicht sonderlich gut aus, mit vielen Werten über 100, und einem Wertebereich von -62 bis 219. Wir sehen hier oft also Überschätzungen von relevanter höhe. Der Median Bias ist hier eher positiv, von -50 bis 150
+
+
 
 *FRT Full Data Fit Problems*
 ```{r}
@@ -1730,14 +1773,14 @@ res_discourse_particles_fullfit_frt <- run_fullfits_discourse_particles_frt(
 round_df_4(res_discourse_particles_fullfit_frt$fullfit_all)
 round_df_4(res_discourse_particles_fullfit_frt$problem_counts)
 round_df_4(res_discourse_particles_fullfit_frt$problem_fits_only)
+
+knitr::kable(
+  round_df_4(res_discourse_particles_fullfit_frt$problem_counts),
+  format = "html",
+  table.attr = 'style="width:100%; table-layout: fixed;"'
+)
 ```
-Experiment Por Ello Incluso: 
-nonposdef_hessian	5	
-	AE: 4a
-	AE: 4bb
-	CG: 4a
-	CG: 4ba
-	CG: 4bb
+
 
 *FRT: Topic LOO +  Fit Probleme*
 ```{r}
@@ -2165,25 +2208,21 @@ res_discourse_particles_topicloo_frt <- run_topicloo_discourse_particles(
 # OUTPUTS
 # =========================================================
 
-round_df_4(res_discourse_particles_topicloo_frt$loo_all)
-round_df_4(res_discourse_particles_topicloo_frt$loo_summary)
-round_df_4(res_discourse_particles_topicloo_frt$problem_counts)
-round_df_4(res_discourse_particles_topicloo_frt$problem_fits_only)
-```
-Experiment Por Ello Incluso: 
-Im FRT Topic LOO beobachten wir Fit Probleme in diesen Aggregates:
-AE: 4a	nonposdef_hessian	1		
-AE: 4ba	hessian_or_singularity_signal	1		
-AE: 4bb	nonposdef_hessian	1		
-BF: 4ba	nonposdef_hessian	1		
-BF: 4bb	nonposdef_hessian	1		
-CG: 4a	nonposdef_hessian	1		
-CG: 4ba	nonposdef_hessian	1		
-CG: 4bb	nonposdef_hessian	1	
-Die 1 zeigt: nur ein mal problem, also 1 / 8 Folds. 
+#round_df_4(res_discourse_particles_topicloo_frt$loo_all)
+#round_df_4(res_discourse_particles_topicloo_frt$loo_summary)
+#round_df_4(res_discourse_particles_topicloo_frt$problem_counts)
+#round_df_4(res_discourse_particles_topicloo_frt$problem_fits_only)
 
-Wir beobachten sehr stark varriierende mean_rmse, von 400-1600, in den verschiedenen Aggregate Modellen. Der MAE folgt dem gleichen Muster. 
-Der Bias selber sieht nicht so schlimm aus, und varriiert von -150ms bis +50ms, ist damit also auch nicht sonderlich überzeugend, jedoch besser als unsere RMSE und MAE. Das deutet darauf hin, dass unsere Predictions stark streuuen, und im Mittel eher aber nicht ganz so drastisch unterschätzen. 
+knitr::kable(
+ round_df_4(res_discourse_particles_topicloo_frt$loo_summary),
+  format = "html",
+  table.attr = 'style="width:100%; table-layout: fixed;"'
+)
+
+
+```
+
+
 
 *FRT: Participant LOO + Fit Probleme*
 ```{r}
@@ -2611,29 +2650,18 @@ res_discourse_particles_participantloo_frt <- run_participantloo_discourse_parti
 # OUTPUTS
 # =========================================================
 
-round_df_4(res_discourse_particles_participantloo_frt$loo_all)
-round_df_4(res_discourse_particles_participantloo_frt$loo_summary)
-round_df_4(res_discourse_particles_participantloo_frt$problem_counts)
-round_df_4(res_discourse_particles_participantloo_frt$problem_fits_only)
-```
-Experiment Por Ello Incluso: 
-Im TRT Particiapnt LOO beobachten wir folgende Fit Probleme in den verschiedenen Aggregates:
-AE: 4a	nonposdef_hessian	24		
-AE: 4bb	nonposdef_hessian	24		
-CG: 4a	nonposdef_hessian	12		
-CG: 4ba	nonposdef_hessian	12		
-CG: 4bb	nonposdef_hessian	12		
-BF: 4ba	nonposdef_hessian	9		
-AE: 4ba	hessian_or_singularity_signal	4		
-AE: 4ba	nonposdef_hessian	4		
-BF: 4bb	nonposdef_hessian	2		
-CG: 4a	hessian_or_singularity_signal	1		
-CG: 4ba	hessian_or_singularity_signal	1		
-CG: 4bb	hessian_or_singularity_signal	1		
-Insgesamt wurden 156 Fits durchgeführt. 
+#round_df_4(res_discourse_particles_participantloo_frt$loo_all)
+#round_df_4(res_discourse_particles_participantloo_frt$loo_summary)
+#round_df_4(res_discourse_particles_participantloo_frt$problem_counts)
+#round_df_4(res_discourse_particles_participantloo_frt$problem_fits_only)
 
-Wir beobachten stark varriierende mean_rmse, von 350-1260, in den verschiedenen Modellen. Der MAE folgt dem gleichen Muster. 
-Der mean Bias sieht meist in Ordnung aus, mit einem Wertebereich von -100 bis 0 Wir sehen hier oft also Unterschätzungen von relevanter höhe. Der Median Bias ist allerdings dauerhaft postitiv und reicht von 28 bis 184. 
+knitr::kable(
+  round_df_4(res_discourse_particles_participantloo_frt$loo_summary),
+  format = "html",
+  table.attr = 'style="width:100%; table-layout: fixed;"'
+)
+```
+
 
 *RRT: Full Data Fit Probleme*
 ```{r}
@@ -3046,14 +3074,17 @@ res_discourse_particles_rrt_fullfit <- run_fullfits_discourse_particles_rrt(
 # OUTPUTS
 # =========================================================
 
-round_df_4(res_discourse_particles_rrt_fullfit$fullfit_all)
-round_df_4(res_discourse_particles_rrt_fullfit$problem_counts)
-round_df_4(res_discourse_particles_rrt_fullfit$problem_fits_only)
+#round_df_4(res_discourse_particles_rrt_fullfit$fullfit_all)
+#round_df_4(res_discourse_particles_rrt_fullfit$problem_counts)
+#round_df_4(res_discourse_particles_rrt_fullfit$problem_fits_only)
+
+knitr::kable(
+  round_df_4(res_discourse_particles_rrt_fullfit$problem_counts),
+  format = "html",
+  table.attr = 'style="width:100%; table-layout: fixed;"'
+)
 ```
-Experiment Por Ello Incluso: 
-Fit Probleme:
-DH: 2-3 hessian_or_singularity_signal	1	
-Bereits auf vollen Daten bekommen wir hier eine "failed to invert Hessian from numDeriv::jacobian(), falling back to internal vcov estimate" in diesem Aggregate Modell
+
 
 *RRT: Topic LOO*
 ```{r}
@@ -3648,29 +3679,18 @@ res_discourse_particles_rrt_topicloo <- run_topicloo_discourse_particles_rrt(
 # OUTPUTS
 # =========================================================
 
-round_df_4(res_discourse_particles_rrt_topicloo$loo_all)
-round_df_4(res_discourse_particles_rrt_topicloo$loo_summary)
-round_df_4(res_discourse_particles_rrt_topicloo$problem_counts)
-round_df_4(res_discourse_particles_rrt_topicloo$problem_fits_only)
+#round_df_4(res_discourse_particles_rrt_topicloo$loo_all)
+#round_df_4(res_discourse_particles_rrt_topicloo$loo_summary)
+#round_df_4(res_discourse_particles_rrt_topicloo$problem_counts)
+#round_df_4(res_discourse_particles_rrt_topicloo$problem_fits_only)
+
+knitr::kable(
+  round_df_4(res_discourse_particles_rrt_topicloo$loo_summary),
+  format = "html",
+  table.attr = 'style="width:100%; table-layout: fixed;"'
+)
 ```
-Experiment Por Ello Incluso: 
-Fit Probleme:
-AE: 1-3	singular_random_effects	8		
-DH: 2-3	singular_random_effects	8		
-AE: 4a	singular_random_effects	7		
-AE: 4bb	singular_random_effects	7		
-BF: 4ba	singular_random_effects	6		
-AE: 4ba	singular_random_effects	3		
-DH: 4ba	singular_random_effects	2		
-DH: 4bb	singular_random_effects	2		
-AE: 4a	nonposdef_hessian	1		
-AE: 4bb	nonposdef_hessian	1		
-BF: 1-3	singular_random_effects	1		
-BF: 4bb	singular_random_effects	1		
-CG: 2-3	singular_random_effects	1		
-DH: 4ba	nonposdef_hessian	1		
-DH: 4bb	nonposdef_hessian	1		
-Im RRT-Output mit Topic-LOO ist das Bild etwas schwieriger als bei TRT und FRT, was bei einer Zielvariable mit rund 50 % Nullwerten nicht überrascht. Positiv ist zunächst, dass es keine fehlgeschlagenen Fits, keine Konvergenzprobleme und keine Rank-Deficiency gibt. Gleichzeitig treten aber in mehreren Clustern singuläre Random Effects auf, teils sogar in allen Holdout-Folds, und vereinzelt auch non-positive-definite Hessians sowie Warnungen. Das spricht dafür, dass das Modell formal meist noch schätzbar ist, die Random-Effects-Struktur aber in einigen Teilmodellen nicht stabil getragen wird. Auch die Vorhersagegüte schwankt deutlich: Die Fehlerwerte reichen grob von etwa 418 bis 1426 beim mean RMSE und von etwa 297 bis 918 beim mean MAE, also von eher brauchbar bis ziemlich schwach. Insgesamt sind die Bias-Werte meist negativ, was im Mittel auf eine Tendenz zur Unterschätzung hindeutet. Teilweise ist aber der median bias positiv, was zeigt, dass einzelne stärkere negative Abweichungen den Mittelwert nach unten ziehen können, obwohl die typische Fold-Tendenz weniger negativ oder sogar leicht positiv ist. Insgesamt wirkt die Evaluation damit deutlich heterogener und instabiler als bei TRT und FRT, was gut zur starken Nullinflation der RRT passt.
+
 
 *RRT: Participant LOO*
 ```{r}
@@ -4265,28 +4285,18 @@ res_discourse_particles_rrt_participantloo <- run_participantloo_discourse_parti
 # OUTPUTS
 # =========================================================
 
-round_df_4(res_discourse_particles_rrt_participantloo$loo_all)
-round_df_4(res_discourse_particles_rrt_participantloo$loo_summary)
-round_df_4(res_discourse_particles_rrt_participantloo$problem_counts)
-round_df_4(res_discourse_particles_rrt_participantloo$problem_fits_only)
-```
-Experiment Por Ello Incluso: 
-Fit Probleme: 
-AE: 1-3	singular_random_effects	40		
-BF: 4ba	singular_random_effects	38		
-DH: 2-3	singular_random_effects	37		
-AE: 4a	singular_random_effects	35		
-AE: 4bb	singular_random_effects	35		
-AE: 4ba	singular_random_effects	5		
-DH: 4ba	nonposdef_hessian	4		
-DH: 4bb	nonposdef_hessian	4		
-CG: 2-3	nonposdef_hessian	3		
-DH: 2-3	nonposdef_hessian	3		
-DH: 4ba	singular_random_effects	2		
-DH: 4bb	singular_random_effects	2		
-CG: 2-3	singular_random_effects	1		
+#round_df_4(res_discourse_particles_rrt_participantloo$loo_all)
+#round_df_4(res_discourse_particles_rrt_participantloo$loo_summary)
+#round_df_4(res_discourse_particles_rrt_participantloo$problem_counts)
+#round_df_4(res_discourse_particles_rrt_participantloo$problem_fits_only)
 
-Im RRT-Output des Participant LOO mit 40 Holdout-Fits bleibt das Grundmuster schwierig, was bei einer Zielvariable mit vielen Nullwerten erwartbar ist. Positiv ist, dass es keine fehlgeschlagenen Fits, keine Konvergenzprobleme und keine Rank-Deficiency gibt. Gleichzeitig treten aber in mehreren Clustern weiterhin auffällig oft singuläre Random Effects auf, teils sehr häufig, und in einigen Fällen auch non-positive-definite Hessians sowie Warnungen. Das spricht dafür, dass die Modelle zwar meist noch schätzbar sind, die Random-Effects-Struktur aber nicht in allen Teilmodellen stabil getragen wird. Auch die Vorhersagegüte variiert stark: Der mean RMSE liegt grob zwischen 369 und 1075, der mean MAE** zwischen 300 und 977, also von eher brauchbar bis klar schwach. Die mean bias-Werte sind fast überall negativ und deuten damit im Mittel eher auf Unterschätzung hin, während die median bias-Werte meist positiv sind. Das zeigt erneut, dass einzelne stärkere negative Abweichungen den Mittelwert nach unten ziehen, obwohl die typische Fold-Tendenz oft weniger negativ oder sogar leicht positiv ausfällt. Insgesamt wirkt die Evaluation damit weiterhin deutlich heterogener und instabiler als bei TRT und FRT.
+knitr::kable(
+  round_df_4(res_discourse_particles_rrt_participantloo$loo_summary),
+  format = "html",
+  table.attr = 'style="width:100%; table-layout: fixed;"'
+)
+```
+
 
 
 *RRT Participant LOO 0er Analyse*
@@ -4903,13 +4913,18 @@ res_discourse_particles_rrt_zero_participantloo <- run_participantloo_discourse_
 # OUTPUTS
 # =========================================================
 
-round_df_4(res_discourse_particles_rrt_zero_participantloo$loo_all)
-round_df_4(res_discourse_particles_rrt_zero_participantloo$loo_summary)
-round_df_4(res_discourse_particles_rrt_zero_participantloo$problem_counts)
-round_df_4(res_discourse_particles_rrt_zero_participantloo$problem_fits_only)
+#round_df_4(res_discourse_particles_rrt_zero_participantloo$loo_all)
+#round_df_4(res_discourse_particles_rrt_zero_participantloo$loo_summary)
+#round_df_4(res_discourse_particles_rrt_zero_participantloo$problem_counts)
+#round_df_4(res_discourse_particles_rrt_zero_participantloo$problem_fits_only)
+
+knitr::kable(
+  round_df_4(res_discourse_particles_rrt_participantloo$loo_summary),
+  format = "html",
+  table.attr = 'style="width:100%; table-layout: fixed;"'
+)
 ```
-Experiment Por Ello Incluso: 
-Die Participant-LOO-Evaluation des Nullteils zeigt insgesamt eine gute mittlere Kalibrierung der vorhergesagten Nullwahrscheinlichkeiten, da beobachtete Nullraten und mittlere vorhergesagte Nullwahrscheinlichkeiten eng beieinander liegen. Die Trennschärfe zwischen Null- und Positivfällen fällt jedoch je nach AOI-Aggregat unterschiedlich aus. Während einige Aggregate eine brauchbare Balanced Accuracy erreichen, zeigen andere eine deutliche Schieflage zugunsten einer der beiden Klassen, etwa mit sehr hoher Nullerkennung bei gleichzeitig fast vollständigem Verfehlen positiver Fälle oder umgekehrt.
+
 
 *RRT 0er: Topic LOO*
 ```{r}
@@ -5525,13 +5540,18 @@ res_discourse_particles_rrt_zero_topicloo <- run_topicloo_discourse_particles_rr
 # OUTPUTS
 # =========================================================
 
-round_df_4(res_discourse_particles_rrt_zero_topicloo$loo_all)
-round_df_4(res_discourse_particles_rrt_zero_topicloo$loo_summary)
-round_df_4(res_discourse_particles_rrt_zero_topicloo$problem_counts)
-round_df_4(res_discourse_particles_rrt_zero_topicloo$problem_fits_only)
+#round_df_4(res_discourse_particles_rrt_zero_topicloo$loo_all)
+#round_df_4(res_discourse_particles_rrt_zero_topicloo$loo_summary)
+#round_df_4(res_discourse_particles_rrt_zero_topicloo$problem_counts)
+#round_df_4(res_discourse_particles_rrt_zero_topicloo$problem_fits_only)
+
+knitr::kable(
+  round_df_4(res_discourse_particles_rrt_zero_topicloo$loo_summary),
+  format = "html",
+  table.attr = 'style="width:100%; table-layout: fixed;"'
+)
 ```
-Experiment Por Ello Incluso: 
-In der Topic-LOO-Evaluation bleibt die mittlere Kalibrierung des Nullteils weitgehend erhalten, da beobachtete und vorhergesagte Nullraten eng beieinander liegen. Die Diskriminationsleistung fällt jedoch je nach AOI-Aggregat nur mäßig aus. Insbesondere zeigen mehrere Aggregate eine deutliche Schieflage zwischen der Erkennung von Nullfällen und positiven Fällen, was auf eine begrenzte Generalisierbarkeit der Nullklassifikation auf neue Topics hindeutet.
+
 
 
 
@@ -6191,12 +6211,46 @@ res_trt_residuals <- run_trt_residual_analysis_discourse_particles(
 # TABELLEN
 # =========================================================
 
-round_df_4(res_trt_residuals$residual_summary)
-round_df_4(res_trt_residuals$problem_counts)
-round_df_4(res_trt_residuals$problem_fits_only)
+#round_df_4(res_trt_residuals$residual_summary)
+#round_df_4(res_trt_residuals$problem_counts)
+#round_df_4(res_trt_residuals$problem_fits_only)
+
+
+knitr::kable(
+  round_df_4(res_trt_residuals$problem_counts),
+  format = "html",
+  table.attr = 'style="width:100%; table-layout: fixed;"'
+)
+
+tab <-  round_df_4(res_trt_residuals$residual_summary) %>% select(- formula)
+
+
+print_split_table <- function(tab, id_cols = 1:3, chunk_size = 6, font_size = 8) {
+  id_names <- names(tab)[id_cols]
+  other_names <- names(tab)[-id_cols]
+
+  split_index <- ceiling(seq_along(other_names) / chunk_size)
+  groups <- split(other_names, split_index)
+
+  for (i in seq_along(groups)) {
+    cols_i <- c(id_names, groups[[i]])
+    tab_i <- tab[, cols_i, drop = FALSE]
+
+    print(
+      knitr::kable(
+        tab_i,
+        format = "html",
+        escape = FALSE
+      ) %>%
+        kable_styling(full_width = TRUE, font_size = font_size)
+    )
+
+    cat("<br><br>")
+  }
+}
+print_split_table(tab)
 ```
-Experiment Por Ello Incluso: 
-Die residualdiagnostische Prüfung der TRT-Gamma-Modelle ergab insgesamt überwiegend unauffällige Befunde. Die simulationsbasierten DHARMa-Residuen lagen in den meisten AOI-Aggregaten nahe der erwarteten Verteilung, ohne Hinweise auf generelle Dispersionprobleme. Auch der kategoriale Residuentest ergab keine Hinweise darauf, dass sich die Residuen systematisch zwischen den Stufen von AOI.condition unterscheiden. Der Quantiltest für nLetters war in den meisten Aggregaten unauffällig, zeigte jedoch in einzelnen Fällen Hinweise auf verbleibende Reststruktur über die Längenvariable. Zusätzlich traten vereinzelt Signale für Ausreißer oder globale Verteilungsabweichungen auf. Die ergänzenden Residualplots gegen die fitted values deuteten zudem darauf hin, dass die Modellanpassung über das Vorhersageniveau nicht in allen Aggregaten vollständig gleichmäßig ist. Insgesamt ist die Modellanpassung damit als solide, aber nicht vollständig unauffällig zu bewerten.
+
 
 *FRT DHARMa*
 ```{r}
@@ -6847,11 +6901,45 @@ res_frt_residuals <- run_frt_residual_analysis_discourse_particles(
 # TABELLEN
 # =========================================================
 
-round_df_4(res_frt_residuals$residual_summary)
-round_df_4(res_frt_residuals$problem_counts)
-round_df_4(res_frt_residuals$problem_fits_only)
+#round_df_4(res_frt_residuals$residual_summary)
+#round_df_4(res_frt_residuals$problem_counts)
+#round_df_4(res_frt_residuals$problem_fits_only)
+
+
+knitr::kable(
+  round_df_4(res_frt_residuals$problem_counts),
+  format = "html",
+  table.attr = 'style="width:100%; table-layout: fixed;"'
+)
+
+tab <-   round_df_4(res_frt_residuals$residual_summary) %>% select(- formula)
+
+
+print_split_table <- function(tab, id_cols = 1:3, chunk_size = 6, font_size = 8) {
+  id_names <- names(tab)[id_cols]
+  other_names <- names(tab)[-id_cols]
+
+  split_index <- ceiling(seq_along(other_names) / chunk_size)
+  groups <- split(other_names, split_index)
+
+  for (i in seq_along(groups)) {
+    cols_i <- c(id_names, groups[[i]])
+    tab_i <- tab[, cols_i, drop = FALSE]
+
+    print(
+      knitr::kable(
+        tab_i,
+        format = "html",
+        escape = FALSE
+      ) %>%
+        kable_styling(full_width = TRUE, font_size = font_size)
+    )
+
+    cat("<br><br>")
+  }
+}
+print_split_table(tab)
 ```
 
-Experiment Por Ello Incluso: 
-Die residualdiagnostische Prüfung der FRT-Gamma-Modelle ergab insgesamt ein gemischteres Bild als bei TRT. Zwar blieben die globalen DHARMa-Tests auf Uniformität und Dispersion in den meisten AOI-Aggregaten unauffällig, und auch für AOI.condition ergaben sich keine Hinweise auf systematische gruppenspezifische Residualunterschiede. Ebenso zeigte der Quantiltest für nLetters nur in Einzelfällen verbleibende Reststruktur. Allerdings traten in mehreren Aggregaten Konvergenzprobleme in Form nicht positiv definiter Hessian-Matrizen auf. Ergänzend deuteten die Residualplots gegen die fitted values auf lokale Missanpassungen und eine ungleichmäßige Modellanpassung über das Vorhersageniveau hin. Insgesamt erscheinen die FRT-Modelle damit grundsätzlich verwendbar, jedoch klar weniger stabil und weniger unauffällig als die entsprechenden TRT-Modelle.
+
 
