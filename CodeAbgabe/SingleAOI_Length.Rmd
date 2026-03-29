@@ -1,0 +1,1398 @@
+---
+title: "SingleAOI_Length"
+output: html_document
+---
+
+---
+title: "LinearCoef_GammaLog"
+output: html_document
+---
+
+
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+  echo = FALSE,
+  warning = FALSE,
+  message = FALSE,
+  error = FALSE
+)
+```
+
+```{r}
+library(here)
+library(dplyr)
+library(tidyr)
+library(purrr)
+library(tibble)
+library(ggplot2)
+library(lme4)
+library(mgcv)
+```
+
+```{r}
+c_bed <- readRDS(here("prepped Data", "C_bed.rds"))
+c_ein <- readRDS(here("prepped Data", "C_ein.rds"))
+n_bed <- readRDS(here("prepped Data", "N_bed.rds"))
+n_ein <- readRDS(here("prepped Data", "N_ein.rds"))
+CS    <- readRDS(here("prepped Data", "CS.rds"))
+INC   <- readRDS(here("prepped Data", "INC.rds"))
+```
+
+```{r}
+c_bed <- c_bed %>% dplyr::filter(!is.na(FRT), FRT > 0)
+c_ein <- c_ein %>% dplyr::filter(!is.na(FRT), FRT > 0)
+n_bed <- n_bed %>% dplyr::filter(!is.na(FRT), FRT > 0)
+n_ein <- n_ein %>% dplyr::filter(!is.na(FRT), FRT > 0)
+CS    <- CS    %>% dplyr::filter(!is.na(FRT), FRT > 0)
+INC   <- INC   %>% dplyr::filter(!is.na(FRT), FRT > 0)
+```
+
+
+Full Fit - Numerische Probleme
+```{r}
+library(dplyr)
+library(purrr)
+library(tibble)
+library(lme4)
+library(glmmTMB)
+
+# =========================================================
+# Datensätze
+# =========================================================
+
+dfs_fullfit <- list(
+  c_bed = c_bed,
+  c_ein = c_ein,
+  n_bed = n_bed,
+  n_ein = n_ein,
+  CS    = CS
+)
+
+experiments_with_speaker <- c("n_bed", "n_ein", "CS")
+
+# =========================================================
+# Hilfsfunktionen
+# =========================================================
+
+round_df_4 <- function(df) {
+  df %>%
+    dplyr::mutate(
+      dplyr::across(where(is.numeric), ~ round(.x, 4))
+    )
+}
+
+fixed_part_raw <- function(exp_name) {
+  if (exp_name %in% experiments_with_speaker) {
+    "condition * speaker"
+  } else {
+    "condition"
+  }
+}
+
+# =========================================================
+# NORMAL: lmer-Fit mit Diagnose
+# =========================================================
+
+fit_lmer_with_diag <- function(formula, data, expect_term = NULL) {
+  warn_msgs <- character()
+  err_msg <- NA_character_
+  fit <- NULL
+
+  fit <- tryCatch(
+    withCallingHandlers(
+      {
+        lme4::lmer(
+          formula = formula,
+          data = data,
+          REML = FALSE
+        )
+      },
+      warning = function(w) {
+        warn_msgs <<- c(warn_msgs, conditionMessage(w))
+        invokeRestart("muffleWarning")
+      },
+      message = function(m) {
+        warn_msgs <<- c(warn_msgs, conditionMessage(m))
+        invokeRestart("muffleMessage")
+      }
+    ),
+    error = function(e) {
+      err_msg <<- conditionMessage(e)
+      NULL
+    }
+  )
+
+  warn_text <- paste(unique(c(warn_msgs, if (!is.na(err_msg)) err_msg else character())), collapse = " | ")
+  warn_text_low <- tolower(warn_text)
+
+  if (is.null(fit)) {
+    return(tibble::tibble(
+      fit_ok = FALSE,
+      rank_deficient = grepl("rank deficient|dropping", warn_text_low),
+      singular = NA,
+      convergence_problem = grepl("converg|failed|gradient|degenerate|boundary|unidentifiable|eigenvalue", warn_text_low),
+      hessian_problem = grepl("hessian|degenerate", warn_text_low),
+      identifiability_problem = grepl("unidentifiable|eigenvalue|rescale", warn_text_low),
+      term_dropped = NA,
+      message_text = ifelse(nchar(warn_text) == 0, NA_character_, warn_text)
+    ))
+  }
+
+  coef_names <- rownames(coef(summary(fit)))
+  term_dropped <- if (!is.null(expect_term)) !(expect_term %in% coef_names) else FALSE
+
+  singular_flag <- tryCatch(
+    lme4::isSingular(fit, tol = 1e-4),
+    error = function(e) NA
+  )
+
+  opt_msgs <- tryCatch(
+    fit@optinfo$conv$lme4$messages,
+    error = function(e) NULL
+  )
+
+  opt_text <- if (is.null(opt_msgs)) "" else paste(opt_msgs, collapse = " | ")
+  all_text <- paste(c(warn_text, opt_text), collapse = " | ")
+  all_text_low <- tolower(all_text)
+
+  tibble::tibble(
+    fit_ok = TRUE,
+    rank_deficient = term_dropped || grepl("rank deficient|dropping", all_text_low),
+    singular = singular_flag,
+    convergence_problem = grepl("converg|failed|gradient|degenerate|boundary", all_text_low),
+    hessian_problem = grepl("hessian|degenerate hessian|numerically singular", all_text_low),
+    identifiability_problem = grepl("unidentifiable|eigenvalue|rescale", all_text_low),
+    term_dropped = term_dropped,
+    message_text = ifelse(nchar(all_text) == 0, NA_character_, all_text)
+  )
+}
+
+# =========================================================
+# GAMMA: glmmTMB-Fit mit Diagnose
+# =========================================================
+
+extract_re_sds_glmmTMB <- function(fit) {
+  vc <- tryCatch(VarCorr(fit), error = function(e) NULL)
+  if (is.null(vc) || is.null(vc$cond)) return(numeric())
+
+  out <- numeric()
+
+  for (grp in names(vc$cond)) {
+    mat <- vc$cond[[grp]]
+    sd_attr <- attr(mat, "stddev")
+
+    if (!is.null(sd_attr)) {
+      out <- c(out, as.numeric(sd_attr))
+    } else if (is.matrix(mat)) {
+      out <- c(out, sqrt(diag(as.matrix(mat))))
+    }
+  }
+
+  out[is.finite(out)]
+}
+
+fit_gamma_with_diag <- function(formula, data, expect_term = NULL, re_sd_tol = 1e-4) {
+  warn_msgs <- character()
+  info_msgs <- character()
+  err_msg <- NA_character_
+  fit <- NULL
+
+  fit <- tryCatch(
+    withCallingHandlers(
+      {
+        glmmTMB::glmmTMB(
+          formula = formula,
+          data = data,
+          family = Gamma(link = "log")
+        )
+      },
+      warning = function(w) {
+        warn_msgs <<- c(warn_msgs, conditionMessage(w))
+        invokeRestart("muffleWarning")
+      },
+      message = function(m) {
+        info_msgs <<- c(info_msgs, conditionMessage(m))
+        invokeRestart("muffleMessage")
+      }
+    ),
+    error = function(e) {
+      err_msg <<- conditionMessage(e)
+      NULL
+    }
+  )
+
+  all_text <- paste(unique(c(info_msgs, warn_msgs, if (!is.na(err_msg)) err_msg else character())), collapse = " | ")
+  all_text_low <- tolower(all_text)
+
+  if (is.null(fit)) {
+    return(tibble::tibble(
+      fit_ok = FALSE,
+      rank_deficient = grepl("rank deficient|dropping", all_text_low),
+      term_dropped = NA,
+      hessian_problem = grepl("hessian|non-positive-definite|non positive definite", all_text_low),
+      convergence_problem = grepl("converg|singular convergence|failed", all_text_low),
+      boundary_re = NA,
+      message_text = ifelse(nchar(all_text) == 0, NA_character_, all_text)
+    ))
+  }
+
+  cc <- tryCatch(summary(fit)$coefficients$cond, error = function(e) NULL)
+  coef_names <- if (is.null(cc)) character() else rownames(cc)
+  term_dropped <- if (!is.null(expect_term)) !(expect_term %in% coef_names) else FALSE
+
+  pdHess <- tryCatch(isTRUE(summary(fit)$sdr$pdHess), error = function(e) NA)
+  conv_code <- tryCatch(fit$fit$convergence, error = function(e) NA_integer_)
+
+  re_sds <- extract_re_sds_glmmTMB(fit)
+  boundary_re <- if (length(re_sds) == 0) NA else any(re_sds < re_sd_tol, na.rm = TRUE)
+
+  tibble::tibble(
+    fit_ok = TRUE,
+    rank_deficient = term_dropped || grepl("rank deficient|dropping", all_text_low),
+    term_dropped = term_dropped,
+    hessian_problem = (!is.na(pdHess) && !pdHess) || grepl("hessian|non-positive-definite|non positive definite", all_text_low),
+    convergence_problem = ((!is.na(conv_code) && conv_code != 0) || grepl("converg|singular convergence|failed", all_text_low)),
+    boundary_re = boundary_re,
+    message_text = ifelse(nchar(all_text) == 0, NA_character_, all_text)
+  )
+}
+
+# =========================================================
+# FULL-FIT NORMAL
+# =========================================================
+
+run_normal_fullfit_problem_table <- function(datas,
+                                             rt = "FRT") {
+  out_rows <- list()
+
+  for (exp_name in names(datas)) {
+    df_exp <- datas[[exp_name]]
+
+    for (aoi_now in sort(unique(df_exp$AOI))) {
+      dat <- df_exp %>%
+        dplyr::filter(AOI == aoi_now) %>%
+        dplyr::mutate(
+          condition = factor(condition),
+          Topic = factor(Topic),
+          Participant = factor(Participant)
+        ) %>%
+        dplyr::filter(
+          !is.na(.data[[rt]]),
+          !is.na(nWords),
+          !is.na(nLetters)
+        ) %>%
+        dplyr::mutate(
+          y = .data[[rt]]
+        )
+
+      if (exp_name %in% experiments_with_speaker) {
+        dat <- dat %>%
+          dplyr::mutate(speaker = factor(speaker)) %>%
+          dplyr::filter(!is.na(speaker))
+      }
+
+      if (nrow(dat) < 20 || dplyr::n_distinct(dat$Topic) < 2) {
+        next
+      }
+
+      fixed_raw <- fixed_part_raw(exp_name)
+
+      f_words <- stats::as.formula(
+        paste0("y ~ ", fixed_raw, " + nWords + (1 | Topic) + (1 | Participant)")
+      )
+
+      f_letters <- stats::as.formula(
+        paste0("y ~ ", fixed_raw, " + nLetters + (1 | Topic) + (1 | Participant)")
+      )
+
+      diag_words <- fit_lmer_with_diag(
+        formula = f_words,
+        data = dat,
+        expect_term = "nWords"
+      ) %>%
+        dplyr::mutate(
+          exp = exp_name,
+          AOI = aoi_now,
+          n_obs = nrow(dat),
+          n_topics = dplyr::n_distinct(dat$Topic),
+          n_participants = dplyr::n_distinct(dat$Participant),
+          n_conditions = dplyr::n_distinct(dat$condition),
+          n_speakers = if (exp_name %in% experiments_with_speaker) dplyr::n_distinct(dat$speaker) else NA_integer_,
+          length_var = "nWords",
+          model_family = "normal",
+          formula = paste(deparse(f_words), collapse = " "),
+          .before = 1
+        )
+
+      diag_letters <- fit_lmer_with_diag(
+        formula = f_letters,
+        data = dat,
+        expect_term = "nLetters"
+      ) %>%
+        dplyr::mutate(
+          exp = exp_name,
+          AOI = aoi_now,
+          n_obs = nrow(dat),
+          n_topics = dplyr::n_distinct(dat$Topic),
+          n_participants = dplyr::n_distinct(dat$Participant),
+          n_conditions = dplyr::n_distinct(dat$condition),
+          n_speakers = if (exp_name %in% experiments_with_speaker) dplyr::n_distinct(dat$speaker) else NA_integer_,
+          length_var = "nLetters",
+          model_family = "normal",
+          formula = paste(deparse(f_letters), collapse = " "),
+          .before = 1
+        )
+
+      out_rows[[length(out_rows) + 1]] <- diag_words
+      out_rows[[length(out_rows) + 1]] <- diag_letters
+    }
+  }
+
+  detail_table <- dplyr::bind_rows(out_rows)
+
+  summary_table <- detail_table %>%
+    dplyr::group_by(model_family, exp, length_var) %>%
+    dplyr::summarise(
+      n_fits = dplyr::n(),
+      n_fit_failed = sum(!fit_ok, na.rm = TRUE),
+      n_rank_deficient = sum(rank_deficient %in% TRUE, na.rm = TRUE),
+      n_term_dropped = sum(term_dropped %in% TRUE, na.rm = TRUE),
+      n_singular = sum(singular %in% TRUE, na.rm = TRUE),
+      n_convergence_problem = sum(convergence_problem %in% TRUE, na.rm = TRUE),
+      n_hessian_problem = sum(hessian_problem %in% TRUE, na.rm = TRUE),
+      n_identifiability_problem = sum(identifiability_problem %in% TRUE, na.rm = TRUE),
+      .groups = "drop"
+    ) %>%
+    round_df_4()
+
+  overall_table <- detail_table %>%
+    dplyr::group_by(model_family, length_var) %>%
+    dplyr::summarise(
+      n_fits = dplyr::n(),
+      n_fit_failed = sum(!fit_ok, na.rm = TRUE),
+      n_rank_deficient = sum(rank_deficient %in% TRUE, na.rm = TRUE),
+      n_term_dropped = sum(term_dropped %in% TRUE, na.rm = TRUE),
+      n_singular = sum(singular %in% TRUE, na.rm = TRUE),
+      n_convergence_problem = sum(convergence_problem %in% TRUE, na.rm = TRUE),
+      n_hessian_problem = sum(hessian_problem %in% TRUE, na.rm = TRUE),
+      n_identifiability_problem = sum(identifiability_problem %in% TRUE, na.rm = TRUE),
+      .groups = "drop"
+    ) %>%
+    round_df_4()
+
+  list(
+    detail_table = detail_table,
+    summary_table = summary_table,
+    overall_table = overall_table
+  )
+}
+
+# =========================================================
+# FULL-FIT GAMMA
+# =========================================================
+
+run_gamma_fullfit_problem_table <- function(datas,
+                                            rt = "FRT",
+                                            re_sd_tol = 1e-4) {
+  out_rows <- list()
+
+  for (exp_name in names(datas)) {
+    df_exp <- datas[[exp_name]]
+
+    for (aoi_now in sort(unique(df_exp$AOI))) {
+      dat <- df_exp %>%
+        dplyr::filter(AOI == aoi_now) %>%
+        dplyr::mutate(
+          condition = factor(condition),
+          Topic = factor(Topic),
+          Participant = factor(Participant)
+        ) %>%
+        dplyr::filter(
+          !is.na(.data[[rt]]),
+          .data[[rt]] > 0,
+          !is.na(nWords),
+          !is.na(nLetters),
+          nWords > 0,
+          nLetters > 0
+        ) %>%
+        dplyr::mutate(
+          y = .data[[rt]]
+        )
+
+      if (exp_name %in% experiments_with_speaker) {
+        dat <- dat %>%
+          dplyr::mutate(speaker = factor(speaker)) %>%
+          dplyr::filter(!is.na(speaker))
+      }
+
+      if (nrow(dat) < 20 || dplyr::n_distinct(dat$Topic) < 2) {
+        next
+      }
+
+      fixed_raw <- fixed_part_raw(exp_name)
+
+      f_words <- stats::as.formula(
+        paste0("y ~ ", fixed_raw, " + nWords + (1 | Topic) + (1 | Participant)")
+      )
+
+      f_letters <- stats::as.formula(
+        paste0("y ~ ", fixed_raw, " + nLetters + (1 | Topic) + (1 | Participant)")
+      )
+
+      diag_words <- fit_gamma_with_diag(
+        formula = f_words,
+        data = dat,
+        expect_term = "nWords",
+        re_sd_tol = re_sd_tol
+      ) %>%
+        dplyr::mutate(
+          exp = exp_name,
+          AOI = aoi_now,
+          n_obs = nrow(dat),
+          n_topics = dplyr::n_distinct(dat$Topic),
+          n_participants = dplyr::n_distinct(dat$Participant),
+          n_conditions = dplyr::n_distinct(dat$condition),
+          n_speakers = if (exp_name %in% experiments_with_speaker) dplyr::n_distinct(dat$speaker) else NA_integer_,
+          length_var = "nWords",
+          model_family = "gamma_log",
+          formula = paste(deparse(f_words), collapse = " "),
+          .before = 1
+        )
+
+      diag_letters <- fit_gamma_with_diag(
+        formula = f_letters,
+        data = dat,
+        expect_term = "nLetters",
+        re_sd_tol = re_sd_tol
+      ) %>%
+        dplyr::mutate(
+          exp = exp_name,
+          AOI = aoi_now,
+          n_obs = nrow(dat),
+          n_topics = dplyr::n_distinct(dat$Topic),
+          n_participants = dplyr::n_distinct(dat$Participant),
+          n_conditions = dplyr::n_distinct(dat$condition),
+          n_speakers = if (exp_name %in% experiments_with_speaker) dplyr::n_distinct(dat$speaker) else NA_integer_,
+          length_var = "nLetters",
+          model_family = "gamma_log",
+          formula = paste(deparse(f_letters), collapse = " "),
+          .before = 1
+        )
+
+      out_rows[[length(out_rows) + 1]] <- diag_words
+      out_rows[[length(out_rows) + 1]] <- diag_letters
+    }
+  }
+
+  detail_table <- dplyr::bind_rows(out_rows)
+
+  summary_table <- detail_table %>%
+    dplyr::group_by(model_family, exp, length_var) %>%
+    dplyr::summarise(
+      n_fits = dplyr::n(),
+      n_fit_failed = sum(!fit_ok, na.rm = TRUE),
+      n_rank_deficient = sum(rank_deficient %in% TRUE, na.rm = TRUE),
+      n_term_dropped = sum(term_dropped %in% TRUE, na.rm = TRUE),
+      n_convergence_problem = sum(convergence_problem %in% TRUE, na.rm = TRUE),
+      n_hessian_problem = sum(hessian_problem %in% TRUE, na.rm = TRUE),
+      n_boundary_re = sum(boundary_re %in% TRUE, na.rm = TRUE),
+      .groups = "drop"
+    ) %>%
+    round_df_4()
+
+  overall_table <- detail_table %>%
+    dplyr::group_by(model_family, length_var) %>%
+    dplyr::summarise(
+      n_fits = dplyr::n(),
+      n_fit_failed = sum(!fit_ok, na.rm = TRUE),
+      n_rank_deficient = sum(rank_deficient %in% TRUE, na.rm = TRUE),
+      n_term_dropped = sum(term_dropped %in% TRUE, na.rm = TRUE),
+      n_convergence_problem = sum(convergence_problem %in% TRUE, na.rm = TRUE),
+      n_hessian_problem = sum(hessian_problem %in% TRUE, na.rm = TRUE),
+      n_boundary_re = sum(boundary_re %in% TRUE, na.rm = TRUE),
+      .groups = "drop"
+    ) %>%
+    round_df_4()
+
+  list(
+    detail_table = detail_table,
+    summary_table = summary_table,
+    overall_table = overall_table
+  )
+}
+
+# =========================================================
+# AUSFÜHREN
+# =========================================================
+
+fullfit_problems_normal <- run_normal_fullfit_problem_table(
+  datas = dfs_fullfit,
+  rt = "FRT"
+)
+
+fullfit_problems_gamma <- run_gamma_fullfit_problem_table(
+  datas = dfs_fullfit,
+  rt = "FRT",
+  re_sd_tol = 1e-4
+)
+
+# =========================================================
+# WICHTIGE CALLS
+# =========================================================
+
+# Gesamtvergleich nWords vs nLetters
+fullfit_problems_normal$overall_table
+fullfit_problems_gamma$overall_table
+
+# Nach Experiment getrennt
+# fullfit_problems_normal$summary_table
+# fullfit_problems_gamma$summary_table
+
+# Detailtabellen aller Full-Fits
+# fullfit_problems_normal$detail_table
+# fullfit_problems_gamma$detail_table
+```
+Voller fit sieht bereits Rank Deficiencies bei nWords im Normal und Gamma. 
+
+
+Überprüfung der Modellfits - Topic LOO
+lme4:
+```{r}
+library(dplyr)
+library(purrr)
+library(tibble)
+library(lme4)
+
+# =========================================================
+# Datensätze
+# =========================================================
+
+dfs_length_models <- list(
+  c_bed = c_bed,
+  c_ein = c_ein,
+  n_bed = n_bed,
+  n_ein = n_ein,
+  CS    = CS
+)
+
+# =========================================================
+# Hilfsfunktionen
+# =========================================================
+
+round_df_4 <- function(df) {
+  df %>%
+    dplyr::mutate(
+      dplyr::across(where(is.numeric), ~ round(.x, 4))
+    )
+}
+
+fixed_part_raw <- function(exp_name) {
+  has_speaker_interaction <- exp_name %in% c("n_bed", "n_ein", "CS")
+  if (has_speaker_interaction) "condition * speaker" else "condition"
+}
+
+make_quick_splits <- function(dat,
+                              topic_var = "Topic",
+                              participant_var = "Participant",
+                              participant_frac = 1,
+                              seed = 123) {
+  set.seed(seed)
+
+  topics <- unique(dat[[topic_var]])
+  splits <- vector("list", length(topics))
+
+  for (i in seq_along(topics)) {
+    topic_out <- topics[i]
+
+    dat_train <- dat %>%
+      dplyr::filter(.data[[topic_var]] != topic_out)
+
+    if (participant_frac < 1) {
+      keep_participants <- unique(dat_train[[participant_var]])
+      n_keep <- max(2, floor(length(keep_participants) * participant_frac))
+      keep_participants <- sample(keep_participants, size = n_keep, replace = FALSE)
+
+      dat_train <- dat_train %>%
+        dplyr::filter(.data[[participant_var]] %in% keep_participants)
+    }
+
+    splits[[i]] <- list(
+      split_id = i,
+      left_out_topic = topic_out,
+      train = dat_train
+    )
+  }
+
+  splits
+}
+
+# =========================================================
+# lme4-Fit mit Diagnose
+# =========================================================
+
+fit_lmer_with_diag <- function(formula, data, expect_term = NULL) {
+  warn_msgs <- character()
+  err_msg <- NA_character_
+  fit <- NULL
+
+  fit <- tryCatch(
+    withCallingHandlers(
+      {
+        lme4::lmer(
+          formula = formula,
+          data = data,
+          REML = FALSE
+        )
+      },
+      warning = function(w) {
+        warn_msgs <<- c(warn_msgs, conditionMessage(w))
+        invokeRestart("muffleWarning")
+      },
+      message = function(m) {
+        warn_msgs <<- c(warn_msgs, conditionMessage(m))
+        invokeRestart("muffleMessage")
+      }
+    ),
+    error = function(e) {
+      err_msg <<- conditionMessage(e)
+      NULL
+    }
+  )
+
+  warn_text <- paste(unique(c(warn_msgs, if (!is.na(err_msg)) err_msg else character())), collapse = " | ")
+  warn_text_low <- tolower(warn_text)
+
+  if (is.null(fit)) {
+    return(tibble::tibble(
+      fit_ok = FALSE,
+      rank_deficient = grepl("rank deficient|dropping", warn_text_low),
+      singular = NA,
+      convergence_problem = grepl("converg|failed|gradient|degenerate|boundary|unidentifiable|eigenvalue", warn_text_low),
+      hessian_problem = grepl("hessian|degenerate", warn_text_low),
+      identifiability_problem = grepl("unidentifiable|eigenvalue|rescale", warn_text_low),
+      term_dropped = NA,
+      message_text = ifelse(nchar(warn_text) == 0, NA_character_, warn_text)
+    ))
+  }
+
+  coef_names <- rownames(coef(summary(fit)))
+  term_dropped <- if (!is.null(expect_term)) !(expect_term %in% coef_names) else FALSE
+
+  singular_flag <- tryCatch(
+    lme4::isSingular(fit, tol = 1e-4),
+    error = function(e) NA
+  )
+
+  opt_msgs <- tryCatch(
+    fit@optinfo$conv$lme4$messages,
+    error = function(e) NULL
+  )
+
+  opt_text <- if (is.null(opt_msgs)) "" else paste(opt_msgs, collapse = " | ")
+  all_text <- paste(c(warn_text, opt_text), collapse = " | ")
+  all_text_low <- tolower(all_text)
+
+  tibble::tibble(
+    fit_ok = TRUE,
+    rank_deficient = term_dropped || grepl("rank deficient|dropping", all_text_low),
+    singular = singular_flag,
+    convergence_problem = grepl("converg|failed|gradient|degenerate|boundary", all_text_low),
+    hessian_problem = grepl("hessian|degenerate hessian|numerically singular", all_text_low),
+    identifiability_problem = grepl("unidentifiable|eigenvalue|rescale", all_text_low),
+    term_dropped = term_dropped,
+    message_text = ifelse(nchar(all_text) == 0, NA_character_, all_text)
+  )
+}
+
+# =========================================================
+# LOO-Diagnose für lme4
+# response_type = "raw" oder "log"
+# =========================================================
+
+run_lme4_loo_problem_table <- function(datas,
+                                       rt = "FRT",
+                                       response_type = c("raw", "log"),
+                                       participant_frac = 1,
+                                       seed = 123) {
+  response_type <- match.arg(response_type)
+
+  out_rows <- list()
+
+  for (exp_name in names(datas)) {
+    df_exp <- datas[[exp_name]]
+
+    for (aoi_now in sort(unique(df_exp$AOI))) {
+      dat <- df_exp %>%
+        dplyr::filter(AOI == aoi_now) %>%
+        dplyr::mutate(
+          condition = factor(condition),
+          Topic = factor(Topic),
+          Participant = factor(Participant)
+        ) %>%
+        dplyr::filter(
+          !is.na(.data[[rt]]),
+          !is.na(nWords),
+          !is.na(nLetters)
+        )
+
+      if (response_type == "log") {
+        dat <- dat %>%
+          dplyr::filter(.data[[rt]] > 0, nWords > 0, nLetters > 0) %>%
+          dplyr::mutate(y = log(.data[[rt]]))
+      } else {
+        dat <- dat %>%
+          dplyr::mutate(y = .data[[rt]])
+      }
+
+      if (exp_name %in% c("n_bed", "n_ein", "CS")) {
+        dat <- dat %>%
+          dplyr::mutate(speaker = factor(speaker)) %>%
+          dplyr::filter(!is.na(speaker))
+      }
+
+      if (nrow(dat) < 20 || dplyr::n_distinct(dat$Topic) < 2) {
+        next
+      }
+
+      fixed_raw <- fixed_part_raw(exp_name)
+
+      f_words <- stats::as.formula(
+        paste0("y ~ ", fixed_raw, " + nWords + (1 | Topic) + (1 | Participant)")
+      )
+
+      f_letters <- stats::as.formula(
+        paste0("y ~ ", fixed_raw, " + nLetters + (1 | Topic) + (1 | Participant)")
+      )
+
+      splits <- make_quick_splits(
+        dat = dat,
+        topic_var = "Topic",
+        participant_var = "Participant",
+        participant_frac = participant_frac,
+        seed = seed
+      )
+
+      for (sp in splits) {
+        dtrain <- sp$train
+
+        diag_words <- fit_lmer_with_diag(
+          formula = f_words,
+          data = dtrain,
+          expect_term = "nWords"
+        ) %>%
+          dplyr::mutate(
+            exp = exp_name,
+            AOI = aoi_now,
+            split_id = sp$split_id,
+            left_out_topic = as.character(sp$left_out_topic),
+            length_var = "nWords",
+            model_family = ifelse(response_type == "raw", "normal", "lognormal"),
+            .before = 1
+          )
+
+        diag_letters <- fit_lmer_with_diag(
+          formula = f_letters,
+          data = dtrain,
+          expect_term = "nLetters"
+        ) %>%
+          dplyr::mutate(
+            exp = exp_name,
+            AOI = aoi_now,
+            split_id = sp$split_id,
+            left_out_topic = as.character(sp$left_out_topic),
+            length_var = "nLetters",
+            model_family = ifelse(response_type == "raw", "normal", "lognormal"),
+            .before = 1
+          )
+
+        out_rows[[length(out_rows) + 1]] <- diag_words
+        out_rows[[length(out_rows) + 1]] <- diag_letters
+      }
+    }
+  }
+
+  detail_table <- dplyr::bind_rows(out_rows)
+
+  summary_table <- detail_table %>%
+    dplyr::group_by(model_family, exp, length_var) %>%
+    dplyr::summarise(
+      n_fits = dplyr::n(),
+      n_fit_failed = sum(!fit_ok, na.rm = TRUE),
+      n_rank_deficient = sum(rank_deficient %in% TRUE, na.rm = TRUE),
+      n_term_dropped = sum(term_dropped %in% TRUE, na.rm = TRUE),
+      n_singular = sum(singular %in% TRUE, na.rm = TRUE),
+      n_convergence_problem = sum(convergence_problem %in% TRUE, na.rm = TRUE),
+      n_hessian_problem = sum(hessian_problem %in% TRUE, na.rm = TRUE),
+      n_identifiability_problem = sum(identifiability_problem %in% TRUE, na.rm = TRUE),
+      .groups = "drop"
+    ) %>%
+    round_df_4()
+
+  overall_table <- detail_table %>%
+    dplyr::group_by(model_family, length_var) %>%
+    dplyr::summarise(
+      n_fits = dplyr::n(),
+      n_fit_failed = sum(!fit_ok, na.rm = TRUE),
+      n_rank_deficient = sum(rank_deficient %in% TRUE, na.rm = TRUE),
+      n_term_dropped = sum(term_dropped %in% TRUE, na.rm = TRUE),
+      n_singular = sum(singular %in% TRUE, na.rm = TRUE),
+      n_convergence_problem = sum(convergence_problem %in% TRUE, na.rm = TRUE),
+      n_hessian_problem = sum(hessian_problem %in% TRUE, na.rm = TRUE),
+      n_identifiability_problem = sum(identifiability_problem %in% TRUE, na.rm = TRUE),
+      .groups = "drop"
+    ) %>%
+    round_df_4()
+
+  list(
+    detail_table = detail_table,
+    summary_table = summary_table,
+    overall_table = overall_table
+  )
+}
+
+# =========================================================
+# Ausführen
+# =========================================================
+
+loo_problems_normal <- run_lme4_loo_problem_table(
+  datas = dfs_length_models,
+  rt = "FRT",
+  response_type = "raw",
+  participant_frac = 1,
+  seed = 123
+)
+
+loo_problems_lognormal <- run_lme4_loo_problem_table(
+  datas = dfs_length_models,
+  rt = "FRT",
+  response_type = "log",
+  participant_frac = 1,
+  seed = 123
+)
+
+# =========================================================
+# Wichtige Calls
+# =========================================================
+
+# Gesamtvergleich nWords vs nLetters
+loo_problems_normal$overall_table
+#loo_problems_lognormal$overall_table
+
+# Nach Experiment getrennt
+#loo_problems_normal$summary_table
+#loo_problems_lognormal$summary_table
+
+# Detailtabelle aller Splits
+#loo_problems_normal$detail_table
+#loo_problems_lognormal$detail_table
+```
+Gamma: 
+```{r}
+library(dplyr)
+library(purrr)
+library(tibble)
+library(glmmTMB)
+
+# =========================================================
+# Datensätze
+# =========================================================
+
+dfs_length_gamma <- list(
+  c_bed = c_bed,
+  c_ein = c_ein,
+  n_bed = n_bed,
+  n_ein = n_ein,
+  CS    = CS
+)
+
+# =========================================================
+# Hilfsfunktionen
+# =========================================================
+
+round_df_4 <- function(df) {
+  df %>%
+    dplyr::mutate(
+      dplyr::across(where(is.numeric), ~ round(.x, 4))
+    )
+}
+
+fixed_part_raw <- function(exp_name) {
+  has_speaker_interaction <- exp_name %in% c("n_bed", "n_ein", "CS")
+  if (has_speaker_interaction) "condition * speaker" else "condition"
+}
+
+make_quick_splits <- function(dat,
+                              topic_var = "Topic",
+                              participant_var = "Participant",
+                              participant_frac = 1,
+                              seed = 123) {
+  set.seed(seed)
+
+  topics <- unique(dat[[topic_var]])
+  splits <- vector("list", length(topics))
+
+  for (i in seq_along(topics)) {
+    topic_out <- topics[i]
+
+    dat_train <- dat %>%
+      dplyr::filter(.data[[topic_var]] != topic_out)
+
+    if (participant_frac < 1) {
+      keep_participants <- unique(dat_train[[participant_var]])
+      n_keep <- max(2, floor(length(keep_participants) * participant_frac))
+      keep_participants <- sample(keep_participants, size = n_keep, replace = FALSE)
+
+      dat_train <- dat_train %>%
+        dplyr::filter(.data[[participant_var]] %in% keep_participants)
+    }
+
+    splits[[i]] <- list(
+      split_id = i,
+      left_out_topic = topic_out,
+      train = dat_train
+    )
+  }
+
+  splits
+}
+
+extract_re_sds_glmmTMB <- function(fit) {
+  vc <- tryCatch(VarCorr(fit), error = function(e) NULL)
+  if (is.null(vc) || is.null(vc$cond)) return(numeric())
+
+  out <- numeric()
+
+  for (grp in names(vc$cond)) {
+    mat <- vc$cond[[grp]]
+    sd_attr <- attr(mat, "stddev")
+
+    if (!is.null(sd_attr)) {
+      out <- c(out, as.numeric(sd_attr))
+    } else if (is.matrix(mat)) {
+      out <- c(out, sqrt(diag(as.matrix(mat))))
+    }
+  }
+
+  out[is.finite(out)]
+}
+
+fit_gamma_with_diag <- function(formula, data, expect_term = NULL, re_sd_tol = 1e-4) {
+  warn_msgs <- character()
+  info_msgs <- character()
+  err_msg <- NA_character_
+  fit <- NULL
+
+  fit <- tryCatch(
+    withCallingHandlers(
+      {
+        glmmTMB::glmmTMB(
+          formula = formula,
+          data = data,
+          family = Gamma(link = "log")
+        )
+      },
+      warning = function(w) {
+        warn_msgs <<- c(warn_msgs, conditionMessage(w))
+        invokeRestart("muffleWarning")
+      },
+      message = function(m) {
+        info_msgs <<- c(info_msgs, conditionMessage(m))
+        invokeRestart("muffleMessage")
+      }
+    ),
+    error = function(e) {
+      err_msg <<- conditionMessage(e)
+      NULL
+    }
+  )
+
+  all_text <- paste(unique(c(info_msgs, warn_msgs, if (!is.na(err_msg)) err_msg else character())), collapse = " | ")
+  all_text_low <- tolower(all_text)
+
+  if (is.null(fit)) {
+    return(tibble::tibble(
+      fit_ok = FALSE,
+      rank_deficient = grepl("rank deficient|dropping", all_text_low),
+      term_dropped = NA,
+      hessian_problem = grepl("hessian|non-positive-definite|non positive definite", all_text_low),
+      convergence_problem = grepl("converg|singular convergence|failed", all_text_low),
+      boundary_re = NA,
+      message_text = ifelse(nchar(all_text) == 0, NA_character_, all_text)
+    ))
+  }
+
+  cc <- tryCatch(summary(fit)$coefficients$cond, error = function(e) NULL)
+  coef_names <- if (is.null(cc)) character() else rownames(cc)
+  term_dropped <- if (!is.null(expect_term)) !(expect_term %in% coef_names) else FALSE
+
+  pdHess <- tryCatch(isTRUE(summary(fit)$sdr$pdHess), error = function(e) NA)
+  conv_code <- tryCatch(fit$fit$convergence, error = function(e) NA_integer_)
+
+  re_sds <- extract_re_sds_glmmTMB(fit)
+  boundary_re <- if (length(re_sds) == 0) NA else any(re_sds < re_sd_tol, na.rm = TRUE)
+
+  tibble::tibble(
+    fit_ok = TRUE,
+    rank_deficient = term_dropped || grepl("rank deficient|dropping", all_text_low),
+    term_dropped = term_dropped,
+    hessian_problem = (!is.na(pdHess) && !pdHess) || grepl("hessian|non-positive-definite|non positive definite", all_text_low),
+    convergence_problem = ((!is.na(conv_code) && conv_code != 0) || grepl("converg|singular convergence|failed", all_text_low)),
+    boundary_re = boundary_re,
+    message_text = ifelse(nchar(all_text) == 0, NA_character_, all_text)
+  )
+}
+
+run_gamma_loo_problem_table <- function(datas,
+                                        rt = "FRT",
+                                        participant_frac = 1,
+                                        seed = 123,
+                                        re_sd_tol = 1e-4) {
+  out_rows <- list()
+
+  for (exp_name in names(datas)) {
+    df_exp <- datas[[exp_name]]
+
+    for (aoi_now in sort(unique(df_exp$AOI))) {
+      dat <- df_exp %>%
+        dplyr::filter(AOI == aoi_now) %>%
+        dplyr::mutate(
+          condition = factor(condition),
+          Topic = factor(Topic),
+          Participant = factor(Participant)
+        ) %>%
+        dplyr::filter(
+          !is.na(.data[[rt]]),
+          .data[[rt]] > 0,
+          !is.na(nWords),
+          !is.na(nLetters),
+          nWords > 0,
+          nLetters > 0
+        ) %>%
+        dplyr::mutate(
+          y = .data[[rt]]
+        )
+
+      if (exp_name %in% c("n_bed", "n_ein", "CS")) {
+        dat <- dat %>%
+          dplyr::mutate(speaker = factor(speaker)) %>%
+          dplyr::filter(!is.na(speaker))
+      }
+
+      if (nrow(dat) < 20 || dplyr::n_distinct(dat$Topic) < 2) {
+        next
+      }
+
+      fixed_raw <- fixed_part_raw(exp_name)
+
+      f_words <- stats::as.formula(
+        paste0("y ~ ", fixed_raw, " + nWords + (1 | Topic) + (1 | Participant)")
+      )
+
+      f_letters <- stats::as.formula(
+        paste0("y ~ ", fixed_raw, " + nLetters + (1 | Topic) + (1 | Participant)")
+      )
+
+      splits <- make_quick_splits(
+        dat = dat,
+        topic_var = "Topic",
+        participant_var = "Participant",
+        participant_frac = participant_frac,
+        seed = seed
+      )
+
+      for (sp in splits) {
+        dtrain <- sp$train
+
+        diag_words <- fit_gamma_with_diag(
+          formula = f_words,
+          data = dtrain,
+          expect_term = "nWords",
+          re_sd_tol = re_sd_tol
+        ) %>%
+          dplyr::mutate(
+            exp = exp_name,
+            AOI = aoi_now,
+            split_id = sp$split_id,
+            left_out_topic = as.character(sp$left_out_topic),
+            length_var = "nWords",
+            model_family = "gamma_log",
+            .before = 1
+          )
+
+        diag_letters <- fit_gamma_with_diag(
+          formula = f_letters,
+          data = dtrain,
+          expect_term = "nLetters",
+          re_sd_tol = re_sd_tol
+        ) %>%
+          dplyr::mutate(
+            exp = exp_name,
+            AOI = aoi_now,
+            split_id = sp$split_id,
+            left_out_topic = as.character(sp$left_out_topic),
+            length_var = "nLetters",
+            model_family = "gamma_log",
+            .before = 1
+          )
+
+        out_rows[[length(out_rows) + 1]] <- diag_words
+        out_rows[[length(out_rows) + 1]] <- diag_letters
+      }
+    }
+  }
+
+  detail_table <- dplyr::bind_rows(out_rows)
+
+  summary_table <- detail_table %>%
+    dplyr::group_by(model_family, exp, length_var) %>%
+    dplyr::summarise(
+      n_fits = dplyr::n(),
+      n_fit_failed = sum(!fit_ok, na.rm = TRUE),
+      n_rank_deficient = sum(rank_deficient %in% TRUE, na.rm = TRUE),
+      n_term_dropped = sum(term_dropped %in% TRUE, na.rm = TRUE),
+      n_convergence_problem = sum(convergence_problem %in% TRUE, na.rm = TRUE),
+      n_boundary_re = sum(boundary_re %in% TRUE, na.rm = TRUE),
+      .groups = "drop"
+    ) %>%
+    round_df_4()
+
+  overall_table <- detail_table %>%
+    dplyr::group_by(model_family, length_var) %>%
+    dplyr::summarise(
+      n_fits = dplyr::n(),
+      n_fit_failed = sum(!fit_ok, na.rm = TRUE),
+      n_rank_deficient = sum(rank_deficient %in% TRUE, na.rm = TRUE),
+      n_term_dropped = sum(term_dropped %in% TRUE, na.rm = TRUE),
+      n_convergence_problem = sum(convergence_problem %in% TRUE, na.rm = TRUE),
+      n_boundary_re = sum(boundary_re %in% TRUE, na.rm = TRUE),
+      .groups = "drop"
+    ) %>%
+    round_df_4()
+
+  list(
+    detail_table = detail_table,
+    summary_table = summary_table,
+    overall_table = overall_table
+  )
+}
+
+# =========================================================
+# Ausführen
+# =========================================================
+
+loo_problems_gamma <- run_gamma_loo_problem_table(
+  datas = dfs_length_gamma,
+  rt = "FRT",
+  participant_frac = 1,
+  seed = 123
+)
+
+
+# =========================================================
+# Wichtige Calls
+# =========================================================
+
+loo_problems_gamma$overall_table
+#loo_problems_gamma$summary_table
+#loo_problems_gamma$detail_table
+```
+Obwohl nWords in mehreren Analysen mit stabileren Condition-Effekten verbunden war, erwies sich der Term über viele Resamples hinweg wiederholt als nicht identifizierbar. Da nLetters in derselben Modellfamilie numerisch deutlich stabiler schätzbar war, wurde nLetters als konservativere und methodisch besser identifizierbare Längenkovariate bevorzugt.
+
+
+
+
+
+Spline Analyse nLetters
+```{r}
+dfs_length <- list(
+  c_bed = c_bed,
+  c_ein = c_ein,
+  n_bed = n_bed,
+  n_ein = n_ein,
+  CS = CS,
+  INC = INC
+)
+
+extract_condition_effects_gam <- function(dfs_length, k = 5) {
+
+  safe_one_fit <- function(dat, dataset_name, aoi_value, length_treatment) {
+
+    vars_needed <- c("FRT", "condition", "Participant", "Topic")
+    if (length_treatment == "nWords") vars_needed <- c(vars_needed, "nWords")
+    if (length_treatment == "nLetters") vars_needed <- c(vars_needed, "nLetters")
+
+    dat <- dat |>
+      dplyr::select(dplyr::all_of(vars_needed)) |>
+      stats::na.omit() |>
+      dplyr::mutate(
+        condition = droplevels(factor(condition)),
+        Participant = droplevels(factor(Participant)),
+        Topic = droplevels(factor(Topic))
+      )
+
+    if (nrow(dat) == 0 || nlevels(dat$condition) < 2) {
+      return(data.frame(
+        dataset = dataset_name,
+        AOI = aoi_value,
+        length_treatment = length_treatment,
+        term = NA_character_,
+        estimate = NA_real_,
+        se = NA_real_,
+        statistic = NA_real_,
+        p_value = NA_real_,
+        edf = NA_real_
+      ))
+    }
+
+    if (length_treatment == "nWords") {
+      n_unique <- dplyr::n_distinct(dat$nWords)
+      if (n_unique < 2) {
+        return(data.frame(
+          dataset = dataset_name,
+          AOI = aoi_value,
+          length_treatment = length_treatment,
+          term = NA_character_,
+          estimate = NA_real_,
+          se = NA_real_,
+          statistic = NA_real_,
+          p_value = NA_real_,
+          edf = NA_real_
+        ))
+      }
+      k_use <- min(k, n_unique)
+    }
+
+    if (length_treatment == "nLetters") {
+      n_unique <- dplyr::n_distinct(dat$nLetters)
+      if (n_unique < 2) {
+        return(data.frame(
+          dataset = dataset_name,
+          AOI = aoi_value,
+          length_treatment = length_treatment,
+          term = NA_character_,
+          estimate = NA_real_,
+          se = NA_real_,
+          statistic = NA_real_,
+          p_value = NA_real_,
+          edf = NA_real_
+        ))
+      }
+      k_use <- min(k, n_unique)
+    }
+
+    form <- switch(
+      length_treatment,
+      none =
+        FRT ~ condition +
+        s(Participant, bs = "re") +
+        s(Topic, bs = "re"),
+
+      nWords =
+        stats::as.formula(
+          paste0(
+            "FRT ~ condition + s(nWords, bs = 'ps', k = ", k_use, ") + ",
+            "s(Participant, bs = 're') + s(Topic, bs = 're')"
+          )
+        ),
+
+      nLetters =
+        stats::as.formula(
+          paste0(
+            "FRT ~ condition + s(nLetters, bs = 'ps', k = ", k_use, ") + ",
+            "s(Participant, bs = 're') + s(Topic, bs = 're')"
+          )
+        )
+    )
+
+    mod <- tryCatch(
+      mgcv::gam(form, data = dat, method = "REML"),
+      error = function(e) NULL
+    )
+
+    if (is.null(mod)) {
+      return(data.frame(
+        dataset = dataset_name,
+        AOI = aoi_value,
+        length_treatment = length_treatment,
+        term = NA_character_,
+        estimate = NA_real_,
+        se = NA_real_,
+        statistic = NA_real_,
+        p_value = NA_real_,
+        edf = NA_real_
+      ))
+    }
+
+    sm <- summary(mod)
+    pt <- sm$p.table
+    rn <- rownames(pt)
+    keep <- grepl("^condition", rn)
+
+    if (!any(keep)) {
+      out <- data.frame(
+        dataset = dataset_name,
+        AOI = aoi_value,
+        length_treatment = length_treatment,
+        term = NA_character_,
+        estimate = NA_real_,
+        se = NA_real_,
+        statistic = NA_real_,
+        p_value = NA_real_,
+        edf = NA_real_
+      )
+      return(out)
+    }
+
+    stat_col <- grep("value", colnames(pt), value = TRUE)[1]
+    p_col <- grep("^Pr", colnames(pt), value = TRUE)[1]
+
+    out <- data.frame(
+      dataset = dataset_name,
+      AOI = aoi_value,
+      length_treatment = length_treatment,
+      term = rn[keep],
+      estimate = pt[keep, "Estimate"],
+      se = pt[keep, "Std. Error"],
+      statistic = pt[keep, stat_col],
+      p_value = pt[keep, p_col],
+      edf = NA_real_,
+      row.names = NULL
+    )
+
+    if (length_treatment != "none" && !is.null(sm$s.table)) {
+      target <- if (length_treatment == "nWords") "s(nWords)" else "s(nLetters)"
+      if (target %in% rownames(sm$s.table)) {
+        out$edf <- sm$s.table[target, "edf"]
+      }
+    }
+
+    out
+  }
+
+  out_list <- lapply(names(dfs_length), function(nm) {
+    dat <- dfs_length[[nm]]
+
+    aoi_tabs <- lapply(sort(unique(dat$AOI)), function(aoi) {
+      dat_aoi <- dat[dat$AOI == aoi, , drop = FALSE]
+
+      dplyr::bind_rows(
+        safe_one_fit(dat_aoi, nm, aoi, "none"),
+        safe_one_fit(dat_aoi, nm, aoi, "nWords"),
+        safe_one_fit(dat_aoi, nm, aoi, "nLetters")
+      )
+    })
+
+    dplyr::bind_rows(aoi_tabs)
+  })
+
+  names(out_list) <- names(dfs_length)
+  out_list
+}
+```
+
+```{r}
+res_condition <- extract_condition_effects_gam(dfs_length, k = 5)
+res_condition
+```
+EDF bei nWords und nLetters oft um 1 rum, wir riskieren überanpassung ohne deutlichen gewinn. 

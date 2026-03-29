@@ -1,0 +1,390 @@
+---
+title: "DataPrep"
+output: html_document
+---
+
+```{r}
+library(here)
+library(dplyr)
+```
+
+```{r, warning=FALSE}
+library(here)
+library(readxl)
+library(dplyr)
+library(janitor)
+
+ambiguity <- read_excel(here("ValidationData", "Ambiguity_Raw_data_2024_ASL.xlsx")) %>%
+  clean_names()
+
+discourse_particles <- read_excel(here("ValidationData", "Discourse_Particles_Raw_data_2024.xlsx")) %>%
+  clean_names()
+
+encap_chp <- read_excel(here("ValidationData", "Encapsulation_Raw_data_2023_CHP.xlsx")) %>%
+  clean_names()
+
+encap_mt <- read_excel(here("ValidationData", "Encapsulation_Raw_data_2024_MT_V4.xls")) %>%
+  clean_names()
+
+encap_on <- read_excel(here("ValidationData", "Encapsulation_Raw_data_2024_ON.xlsx")) %>%
+  clean_names()
+```
+
+```{r, TRT, FRT, RRT, nLetters, Participant}
+ambiguity <- ambiguity %>%
+  dplyr::rename(
+    TRT = aoi_total_reading_time,
+    FRT = aoi_first_pass_reading_time,
+    RRT = aoi_rereading_time,
+    nLetters = character_count_without_spaces,
+    Participant = data_file
+  ) %>%
+  mutate(
+    TRT = as.numeric(TRT),
+    FRT = as.numeric(FRT),
+    RRT = as.numeric(RRT),
+    nLetters = as.numeric(nLetters),
+    Participant = as.factor(Participant)
+  ) %>%
+  filter(TRT > 0)
+
+discourse_particles <- discourse_particles %>%
+  dplyr::rename(
+    TRT = aoi_total_reading_time,
+    FRT = aoi_first_pass_reading_time,
+    RRT = aoi_rereading_time,
+    nLetters = character_count,
+    Participant = data_file
+  ) %>%
+  mutate(
+    TRT = as.numeric(TRT),
+    FRT = as.numeric(FRT),
+    RRT = as.numeric(RRT),
+    nLetters = as.numeric(nLetters),
+    Participant = as.factor(Participant)
+  ) %>%
+  filter(TRT > 0)
+
+encap_chp <- encap_chp %>%
+  dplyr::rename(
+    TRT = aoi_total_reading_time,
+    FRT = aoi_first_pass_reading_time,
+    RRT = aoi_rereading_time,
+    nLetters = character_count,
+    Participant = data_file
+  ) %>%
+  mutate(
+    TRT = as.numeric(TRT),
+    FRT = as.numeric(FRT),
+    RRT = as.numeric(RRT),
+    nLetters = as.numeric(nLetters),
+    Participant = as.factor(Participant)
+  ) %>%
+  filter(TRT > 0)
+
+encap_mt <- encap_mt %>%
+  dplyr::rename(
+    TRT = aoi_total_reading_time,
+    FRT = aoi_first_pass_reading_time,
+    RRT = aoi_rereading_time,
+    nLetters = character_count,
+    Participant = data_file
+  ) %>%
+  mutate(
+    TRT = as.numeric(TRT),
+    FRT = as.numeric(FRT),
+    RRT = as.numeric(RRT),
+    nLetters = as.numeric(nLetters),
+    Participant = as.factor(Participant)
+  ) %>%
+  filter(TRT > 0)
+
+encap_on <- encap_on %>%
+  dplyr::rename(
+    TRT = aoi_total_reading_time,
+    FRT = aoi_first_pass_reading_time,
+    RRT = aoi_rereading_time,
+    nLetters = character_count,
+    Participant = data_file
+  ) %>%
+  mutate(
+    TRT = as.numeric(TRT),
+    FRT = as.numeric(FRT),
+    RRT = as.numeric(RRT),
+    nLetters = as.numeric(nLetters),
+    Participant = as.factor(Participant)
+  ) %>%
+  filter(TRT > 0)
+
+
+```
+
+
+```{r, Ambiguity}
+ambiguity <- ambiguity %>%
+  separate(
+    ia_label_set,
+    into = c("AOI", "Topic", "Condition"),
+    sep = "_",
+    remove = FALSE
+  ) %>%
+  mutate(
+    Topic = as.factor(Topic),
+    Condition = as.factor(Condition),
+    AOI = as.factor(AOI)
+  )
+
+ambiguity <- ambiguity %>%
+  mutate(ambiguity = case_when(
+    Condition %in% c("C1", "C2") ~ "ambiguous",
+    Condition %in% c("C3", "C4") ~ "non_amibiguous"
+  ))
+ambiguity <- ambiguity %>%
+  mutate(subject = case_when(
+    Condition %in% c("C1") ~ "abs",
+    Condition %in% c("C2") ~ "pres_abs",
+    Condition %in% c("C3", "C4") ~ "pres"
+  ))
+ambiguity <- ambiguity %>%
+  mutate(reference = case_when(
+    Condition %in% c("C1", "C2") ~ "poss_same",
+    Condition %in% c("C3") ~ "same",
+    Condition %in% c("C4") ~ "change"
+  ))
+
+ambiguity <- ambiguity %>%
+  mutate(
+    aggr_level = case_when(
+      AOI == "OT" ~ "OT",
+      AOI %in% c("OC1", "OC2") ~ "OC1, OC2",
+      AOI %in% c("S1", "S2", "V1", "V2", "P1", "P2") ~ "S1, S2, V1, V2, P1, P2",
+      AOI %in% c("PV1", "PV2") ~ "PV1, PV2",
+      TRUE ~ NA_character_
+    )
+  )
+```
+
+ 
+```{r, discourse_particles}
+discourse_particles <- discourse_particles %>%
+  mutate(
+    Topic = sub(".*_", "", condition_aoi_set),
+    AOI.condition = sub("_[^_]+$", "", condition_aoi_set)
+  ) %>%
+  mutate(
+    AOI.condition = as.factor(AOI.condition),
+    Topic = as.factor(Topic)
+  )
+
+
+library(dplyr)
+
+discourse_particles <- discourse_particles %>%
+  mutate(
+    aggr_level = case_when(
+      AOI.condition %in% c("A_PE_1", "A_PE_2", "A_PE_3",
+                           "E_I_1",  "E_I_2",  "E_I_3")  ~ "AE: 1-3",
+
+      AOI.condition %in% c("B_PE_1", "B_PE_2", "B_PE_3",
+                           "F_I_1",  "F_I_2",  "F_I_3")  ~ "BF: 1-3",
+
+      AOI.condition %in% c("C_PE_2", "C_PE_3",
+                           "G_I_2",  "G_I_3")           ~ "CG: 2-3",
+
+      AOI.condition %in% c("D_PE_2", "D_PE_3",
+                           "H_I_2",  "H_I_3")           ~ "DH: 2-3",
+
+      AOI.condition %in% c("A_PE_4a", "E_I_4a")         ~ "AE: 4a",
+      AOI.condition %in% c("C_PE_4a", "G_I_4a")         ~ "CG: 4a",
+
+      AOI.condition %in% c("A_PE_4ba", "E_I_4ba")       ~ "AE: 4ba",
+      AOI.condition %in% c("B_PE_4ba", "F_I_4ba")       ~ "BF: 4ba",
+      AOI.condition %in% c("C_PE_4ba", "G_I_4ba")       ~ "CG: 4ba",
+      AOI.condition %in% c("D_PE_4ba", "H_I_4ba")       ~ "DH: 4ba",
+
+      AOI.condition %in% c("A_PE_4bb", "E_I_4bb")       ~ "AE: 4bb",
+      AOI.condition %in% c("B_PE_4bb", "F_I_4bb")       ~ "BF: 4bb",
+      AOI.condition %in% c("C_PE_4bb", "G_I_4bb")       ~ "CG: 4bb",
+      AOI.condition %in% c("D_PE_4bb", "H_I_4bb")       ~ "DH: 4bb",
+
+      TRUE ~ NA_character_
+    )
+  )
+
+#AOI 1 fehlt für: C, D, G, H - Das ist design. Wir können AOI x Condtion nicht trennen, da paar Kombinationen nicht existieren. Wir könnten 1-3 aggregieren, und anderen 3 alleine schätzen, ich würds aber einfach als ungeeignet für den Ansatz abstempeln. Ausweich zur normierung. 
+```
+
+
+```{r, encap_on}
+encap_on <- encap_on %>%
+  tidyr::separate(
+    condition_aoi_set,
+    into = c("Condition", "AOI", "Topic"),
+    sep = "_",
+    remove = FALSE
+  ) %>%
+  mutate(
+    Condition = as.factor(Condition),
+    AOI = as.factor(AOI),
+    Topic = as.factor(Topic)
+  )
+
+encap_on <- encap_on %>%
+  mutate(var1 = case_when(
+    Condition %in% c("SE", "SC") ~ "synonym",
+    Condition %in% c("RE", "RC") ~ "repetition"
+  ))
+encap_on <- encap_on %>%
+  mutate(var2 = case_when(
+    Condition %in% c("SE", "RE") ~ "encapsulation",
+    Condition %in% c("SC", "RC") ~ "coreference"
+  ))
+
+encap_on <- encap_on %>%
+  mutate(
+    aggr_level = case_when(
+      AOI == "1" ~ "1",
+      AOI %in% c("2", "3") ~ "2, 3",
+      AOI %in% c("4", "5", "6") ~ "4, 5, 6",
+      AOI == "8" ~ "8",
+      AOI %in% c("7", "9") ~ "7, 9",
+      TRUE ~ NA_character_
+    )
+  )
+
+```
+
+```{r, encap_chp}
+encap_chp <- encap_chp %>%
+  separate(
+    condition_aoi_set,
+    into = c("Condition", "AOI", "Topic"),
+    sep = "_",
+    remove = FALSE
+  ) %>%
+  mutate(
+    Topic = as.factor(Topic),
+    Condition = as.factor(Condition),
+    AOI = as.factor(AOI)
+  )
+
+encap_chp$mechanism <- substr(encap_chp$Condition, 1, 1)
+encap_chp$mechanism[encap_chp$Condition == "CE0"] <- "none"
+encap_chp$info <- substr(encap_chp$Condition, 2, 2) 
+encap_chp$info[encap_chp$Condition == "CE0"] <- 0
+
+# factors with desired level order
+encap_chp$mechanism <- factor(encap_chp$mechanism)
+encap_chp$mechanism <- relevel(encap_chp$mechanism, ref = "C")
+encap_chp$info <- factor(encap_chp$info, levels = c("1", "2", "3", "4", "5", "6", "7", "0"))
+
+encap_chp <- encap_chp %>%
+  mutate(
+    aggr_level = case_when(
+      AOI == "1" ~ "1",
+      AOI %in% c("2", "3") ~ "2, 3",
+      AOI %in% c("4", "5", "6", "7") ~ "4, 5, 6, 7",
+      AOI == "8" ~ "8",
+      TRUE ~ NA_character_
+    )
+  )
+```
+
+
+```{r, encap_mt}
+encap_mt <-  encap_mt %>%
+  separate(
+    condition_aoi_set,
+    into = c("Condition", "AOI", "Topic"),
+    sep = "_",
+    remove = FALSE
+  ) %>%
+  mutate(
+    Topic = as.factor(Topic),
+    Condition = as.factor(Condition),
+    AOI = as.factor(AOI)
+  )
+
+encap_mt1 <- encap_mt %>%
+  filter(Condition %in% c("CAR", "CAT", "CDR", "CDT", "RAR", "RAT", "RDR", "RDT"))
+
+encap_mt2 <- encap_mt %>%
+  filter(Condition %in% c("CE", "CI", "RE", "RI"))
+```
+
+```{r, encap_mt exp1 }
+encap_mt1 <- encap_mt1 %>%
+  mutate(
+    Category = dplyr::case_when(
+      substr(as.character(Condition), 1, 1) == "C" ~ "categorizing",
+      substr(as.character(Condition), 1, 1) == "R" ~ "recategorizing"
+    ),
+    Determination = dplyr::case_when(
+      substr(as.character(Condition), 2, 2) == "A" ~ "article",
+      substr(as.character(Condition), 2, 2) == "D" ~ "demonstrative"
+    ),
+    Position = dplyr::case_when(
+      substr(as.character(Condition), 3, 3) == "T" ~ "thematic",
+      substr(as.character(Condition), 3, 3) == "R" ~ "rhematic"
+    )
+  ) %>%
+  mutate(
+    Category = factor(Category, levels = c("categorizing", "recategorizing")),
+    Determination = factor(Determination, levels = c("article", "demonstrative")),
+    Position = factor(Position, levels = c("thematic", "rhematic"))
+  )
+
+encap_mt1 <- encap_mt1 %>%
+  mutate(
+    aggr_level = case_when(
+      AOI == "1" ~ "1",
+      AOI %in% c("2", "3") ~ "2, 3",
+      AOI %in% c("4", "5") ~ "4, 5",
+      TRUE ~ NA_character_
+    )
+  )
+```
+
+```{r, encap_mt exp2}
+encap_mt2 <- encap_mt2 %>%
+  mutate(
+    Category = dplyr::case_when(
+      substr(as.character(Condition), 1, 1) == "C" ~ "categorizing",
+      substr(as.character(Condition), 1, 1) == "R" ~ "recategorizing"
+    ),
+    Referent = dplyr::case_when(
+      substr(as.character(Condition), 2, 2) == "E" ~ "encapsulation",
+      substr(as.character(Condition), 2, 2) == "I" ~ "implicature"
+    )
+  ) %>%
+  mutate(
+    Category = factor(Category, levels = c("categorizing", "recategorizing")),
+    Referent = factor(Referent, levels = c("encapsulation", "implicature"))
+  )
+
+encap_mt2 <- encap_mt2 %>%
+  mutate(
+    aggr_level = case_when(
+      AOI == "1" ~ "1",
+      AOI %in% c("2") ~ "2",
+      AOI %in% c("3", "4") ~ "3, 4",
+      TRUE ~ NA_character_
+    )
+  )
+```
+
+
+```{r, export data}
+out_dir <- here("ValidationData")
+dir.create(out_dir, recursive = TRUE, showWarnings = FALSE)
+
+saveRDS(ambiguity, file = here("ValidationData", "ambiguity.rds"))
+saveRDS(encap_on, file = here("ValidationData", "encap_on.rds"))
+saveRDS(encap_chp, file = here("ValidationData", "encap_chp.rds"))
+saveRDS(encap_mt1,      file = here("ValidationData", "encap_mt1.rds"))
+saveRDS(encap_mt2,      file = here("ValidationData", "encap_mt2.rds"))
+saveRDS(discourse_particles,      file = here("ValidationData", "discourse_particles.rds"))
+```
+
+
+

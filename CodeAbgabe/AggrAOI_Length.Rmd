@@ -1,0 +1,3639 @@
+---
+title: "AggrAOI_Length"
+output: html_document
+---
+
+
+```{r}
+library(here)
+library(dplyr)
+library(tidyr)
+library(purrr)
+library(tibble)
+library(ggplot2)
+library(lme4)
+library(mgcv)
+options(scipen = 999)
+```
+
+```{r}
+c_bed <- readRDS(here("prepped Data", "C_bed.rds"))
+c_ein <- readRDS(here("prepped Data", "C_ein.rds"))
+n_bed <- readRDS(here("prepped Data", "N_bed.rds"))
+n_ein <- readRDS(here("prepped Data", "N_ein.rds"))
+CS    <- readRDS(here("prepped Data", "CS.rds"))
+INC   <- readRDS(here("prepped Data", "INC.rds"))
+```
+
+```{r}
+c_bed <- c_bed %>% dplyr::filter(!is.na(FRT), FRT > 0)
+c_ein <- c_ein %>% dplyr::filter(!is.na(FRT), FRT > 0)
+n_bed <- n_bed %>% dplyr::filter(!is.na(FRT), FRT > 0)
+n_ein <- n_ein %>% dplyr::filter(!is.na(FRT), FRT > 0)
+CS    <- CS    %>% dplyr::filter(!is.na(FRT), FRT > 0)
+INC   <- INC   %>% dplyr::filter(!is.na(FRT), FRT > 0)
+```
+
+Explizite Prüfung, nLetters vs nWords pro Cluster - Anzahl Werte & Variation:
+```{r}
+library(dplyr)
+library(purrr)
+library(tidyr)
+library(tibble)
+
+# =========================================================
+# INPUT
+# Erwartet vorhandene Datensätze:
+# c_bed, c_ein, n_bed, n_ein, CS
+# =========================================================
+
+dfs <- list(
+  c_bed = c_bed,
+  c_ein = c_ein,
+  n_bed = n_bed,
+  n_ein = n_ein,
+  CS    = CS
+)
+
+# =========================================================
+# HELFER
+# =========================================================
+
+round_df_4 <- function(df) {
+  df %>%
+    mutate(across(where(is.numeric), ~ round(.x, 4)))
+}
+
+# =========================================================
+# ZÄHLUNG PRO EXPERIMENT × AGGR_LEVEL
+# =========================================================
+
+count_distinct_lengths_by_cluster <- function(df, exp_name) {
+  needed <- c("aggr_level", "AOI", "nWords", "nLetters")
+  missing_cols <- setdiff(needed, names(df))
+
+  if (length(missing_cols) > 0) {
+    stop(
+      "Im Datensatz ", exp_name, " fehlen folgende Variablen: ",
+      paste(missing_cols, collapse = ", ")
+    )
+  }
+
+  df %>%
+    filter(!is.na(aggr_level), !is.na(AOI)) %>%
+    group_by(aggr_level) %>%
+    summarise(
+      experiment = exp_name,
+      n_aoi_in_cluster = n_distinct(AOI),
+      n_obs = dplyr::n(),
+      n_distinct_nWords = n_distinct(nWords[!is.na(nWords)]),
+      n_distinct_nLetters = n_distinct(nLetters[!is.na(nLetters)]),
+      min_nWords = suppressWarnings(min(nWords, na.rm = TRUE)),
+      max_nWords = suppressWarnings(max(nWords, na.rm = TRUE)),
+      min_nLetters = suppressWarnings(min(nLetters, na.rm = TRUE)),
+      max_nLetters = suppressWarnings(max(nLetters, na.rm = TRUE)),
+      .groups = "drop"
+    ) %>%
+    relocate(experiment, .before = aggr_level)
+}
+
+# =========================================================
+# ÜBER ALLE EXPERIMENTE
+# =========================================================
+
+length_distinct_by_cluster <- purrr::imap_dfr(
+  dfs,
+  count_distinct_lengths_by_cluster
+)
+
+# =========================================================
+# OPTIONAL: DIREKTER VERGLEICH
+# Positiv heißt: nLetters hat mehr verschiedene Werte
+# =========================================================
+
+length_distinct_by_cluster <- length_distinct_by_cluster %>%
+  mutate(
+    delta_distinct_nLetters_minus_nWords =
+      n_distinct_nLetters - n_distinct_nWords
+  )
+
+# =========================================================
+# OUTPUT
+# =========================================================
+
+round_df_4(length_distinct_by_cluster)
+```
+
+
+Wir untersuchen das verhalten von nWords und nLetters bei aggregierten AOIs. 
+
+Zuerst: Numerische Stabilität auf vollen Daten:
+```{r}
+library(dplyr)
+library(tidyr)
+library(purrr)
+library(glmmTMB)
+
+# =========================================================
+# INPUT
+# =========================================================
+
+dfs <- list(
+  c_bed = c_bed,
+  c_ein = c_ein,
+  n_bed = n_bed,
+  n_ein = n_ein,
+  CS    = CS
+)
+
+experiments_with_speaker <- c("n_bed", "n_ein", "CS")
+
+# =========================================================
+# HELFER
+# =========================================================
+
+safe_plain_df <- function(df) {
+  out <- as.data.frame(df, stringsAsFactors = FALSE)
+  rownames(out) <- NULL
+  out
+}
+
+round_df_4 <- function(df) {
+  df %>%
+    mutate(across(where(is.numeric), ~ round(.x, 4)))
+}
+
+collapse_unique <- function(x) {
+  x <- unique(stats::na.omit(x))
+  if (length(x) == 0) return(NA_character_)
+  paste(x, collapse = " | ")
+}
+
+# =========================================================
+# DATEN VORBEREITEN
+# Ab jetzt Cluster mit 1 AOI wieder drin lassen
+# =========================================================
+
+prep_full_fit_data <- function(df,
+                               response = "FRT",
+                               use_speaker = FALSE) {
+  needed <- c(response, "nLetters", "nWords", "Participant", "Topic", "condition", "AOI", "aggr_level")
+  if (use_speaker) needed <- c(needed, "speaker")
+
+  missing_cols <- setdiff(needed, names(df))
+  if (length(missing_cols) > 0) {
+    stop("Fehlende Variablen: ", paste(missing_cols, collapse = ", "))
+  }
+
+  out <- df %>%
+    filter(!is.na(.data[[response]])) %>%
+    filter(.data[[response]] > 0) %>%
+    filter(!is.na(nLetters), !is.na(nWords)) %>%
+    filter(!is.na(Participant), !is.na(Topic), !is.na(condition), !is.na(AOI), !is.na(aggr_level))
+
+  if (use_speaker) {
+    out <- out %>% filter(!is.na(speaker))
+  }
+
+  out <- out %>%
+    mutate(
+      Participant = factor(Participant),
+      Topic = factor(Topic),
+      condition = factor(condition),
+      AOI = factor(AOI),
+      aggr_level = factor(aggr_level)
+    )
+
+  if (use_speaker) {
+    out <- out %>% mutate(speaker = factor(speaker))
+  }
+
+  safe_plain_df(out)
+}
+
+# =========================================================
+# FORMELN
+# =========================================================
+
+make_formula_length_compare <- function(response = "FRT",
+                                        length_var = c("nLetters", "nWords"),
+                                        use_speaker = FALSE) {
+  length_var <- match.arg(length_var)
+
+  rhs <- if (use_speaker) {
+    paste("AOI * condition * speaker +", length_var, "+ (1 | Topic) + (1 | Participant)")
+  } else {
+    paste("AOI * condition +", length_var, "+ (1 | Topic) + (1 | Participant)")
+  }
+
+  as.formula(paste(response, "~", rhs))
+}
+
+# =========================================================
+# EIN MODELL FITTEN UND ALLE WARNUNGEN SPEICHERN
+# =========================================================
+
+fit_one_full_model <- function(df,
+                               formula,
+                               response = "FRT") {
+  warns <- character(0)
+  msgs <- character(0)
+
+  fit <- withCallingHandlers(
+    tryCatch(
+      glmmTMB::glmmTMB(
+        formula = formula,
+        data = df,
+        family = Gamma(link = "log")
+      ),
+      error = function(e) e
+    ),
+    warning = function(w) {
+      warns <<- c(warns, conditionMessage(w))
+      invokeRestart("muffleWarning")
+    },
+    message = function(m) {
+      msgs <<- c(msgs, conditionMessage(m))
+      invokeRestart("muffleMessage")
+    }
+  )
+
+  if (inherits(fit, "error")) {
+    return(tibble(
+      fit_ok = FALSE,
+      fit_error = conditionMessage(fit),
+      fit_warning = collapse_unique(c(warns, msgs)),
+      fit_nonposdef_hessian = NA,
+      fit_nonzero_convergence = NA,
+      n_warning_messages = length(unique(c(warns, msgs)))
+    ))
+  }
+
+  fit_nonposdef_hessian <- tryCatch(
+    !isTRUE(fit$sdr$pdHess),
+    error = function(e) NA
+  )
+
+  fit_nonzero_convergence <- tryCatch(
+    {
+      conv <- fit$fit$convergence
+      if (is.null(conv)) NA else conv != 0
+    },
+    error = function(e) NA
+  )
+
+  tibble(
+    fit_ok = TRUE,
+    fit_error = NA_character_,
+    fit_warning = collapse_unique(c(warns, msgs)),
+    fit_nonposdef_hessian = fit_nonposdef_hessian,
+    fit_nonzero_convergence = fit_nonzero_convergence,
+    n_warning_messages = length(unique(c(warns, msgs)))
+  )
+}
+
+# =========================================================
+# PRO EXPERIMENT nLetters vs nWords
+# =========================================================
+
+run_full_length_compare_one_experiment <- function(df,
+                                                   exp_name,
+                                                   response = "FRT",
+                                                   use_speaker = FALSE) {
+  dat <- prep_full_fit_data(
+    df = df,
+    response = response,
+    use_speaker = use_speaker
+  )
+
+  purrr::map_dfr(c("nLetters", "nWords"), function(length_var) {
+    formula_i <- make_formula_length_compare(
+      response = response,
+      length_var = length_var,
+      use_speaker = use_speaker
+    )
+
+    fit_info <- fit_one_full_model(
+      df = dat,
+      formula = formula_i,
+      response = response
+    )
+
+    tibble(
+      experiment = exp_name,
+      response = response,
+      length_var = length_var,
+      n_obs = nrow(dat),
+      n_participants = dplyr::n_distinct(dat$Participant),
+      n_topics = dplyr::n_distinct(dat$Topic),
+      n_AOI = dplyr::n_distinct(dat$AOI),
+      n_aggr_level = dplyr::n_distinct(dat$aggr_level),
+      formula = deparse(formula_i)
+    ) %>%
+      bind_cols(fit_info)
+  })
+}
+
+# =========================================================
+# ÜBER ALLE EXPERIMENTE
+# =========================================================
+
+run_full_length_compare_all <- function(dfs,
+                                        response = "FRT",
+                                        experiments_with_speaker = c("n_bed", "n_ein", "CS")) {
+  res <- purrr::imap_dfr(dfs, function(df, exp_name) {
+    run_full_length_compare_one_experiment(
+      df = df,
+      exp_name = exp_name,
+      response = response,
+      use_speaker = exp_name %in% experiments_with_speaker
+    )
+  })
+
+  summary_tbl <- res %>%
+    group_by(length_var) %>%
+    summarise(
+      n_models = dplyr::n(),
+      n_fit_ok = sum(fit_ok %in% TRUE, na.rm = TRUE),
+      n_fit_failed = sum(fit_ok %in% FALSE, na.rm = TRUE),
+      n_nonposdef_hessian = sum(fit_nonposdef_hessian %in% TRUE, na.rm = TRUE),
+      n_nonzero_convergence = sum(fit_nonzero_convergence %in% TRUE, na.rm = TRUE),
+      n_with_any_warning = sum(!is.na(fit_warning), na.rm = TRUE),
+      total_warning_messages = sum(n_warning_messages, na.rm = TRUE),
+      prop_fit_failed = n_fit_failed / n_models,
+      prop_nonposdef_hessian = n_nonposdef_hessian / n_models,
+      prop_nonzero_convergence = n_nonzero_convergence / n_models,
+      prop_with_any_warning = n_with_any_warning / n_models,
+      .groups = "drop"
+    )
+
+  summary_by_experiment <- res %>%
+    mutate(
+      has_warning = !is.na(fit_warning)
+    ) %>%
+    select(
+      experiment, length_var, fit_ok, fit_error, has_warning,
+      fit_nonposdef_hessian, fit_nonzero_convergence, n_warning_messages
+    )
+
+  list(
+    fit_details = res,
+    summary_overall = summary_tbl,
+    summary_by_experiment = summary_by_experiment
+  )
+}
+
+# =========================================================
+# AUSFÜHREN
+# =========================================================
+
+res_full_length_compare <- run_full_length_compare_all(
+  dfs = dfs,
+  response = "FRT",
+  experiments_with_speaker = experiments_with_speaker
+)
+
+# =========================================================
+# OUTPUTS
+# =========================================================
+
+# Detailtabelle mit allen Fits
+#round_df_4(res_full_length_compare$fit_details)
+
+# Gesamte Zählung nWords vs nLetters
+round_df_4(res_full_length_compare$summary_overall)
+
+# Kurze Übersicht pro Experiment
+#round_df_4(res_full_length_compare$summary_by_experiment)
+```
+Bei vollen Daten kann beides problemlos gefitted werden. 
+
+Hauptkriterien
+1) Prediction über Topic-LOO
+2) Fitprobleme / Warnungen in Holdout-Splits
+3) Instabilität in single AOIs - volle Daten - Gamma
+(wir haben auch single AOI cluster: das gibt uns idee, ob probleme vermehrt auftreten könnten)
+
+
+1) Prediction über Topic-LOO- Gamma
+```{r}
+library(dplyr)
+library(tidyr)
+library(purrr)
+library(glmmTMB)
+
+# =========================================================
+# INPUT
+# =========================================================
+
+dfs <- list(
+  c_bed = c_bed,
+  c_ein = c_ein,
+  n_bed = n_bed,
+  n_ein = n_ein,
+  CS    = CS
+)
+
+experiments_with_speaker <- c("n_bed", "n_ein", "CS")
+
+# =========================================================
+# HELFER
+# =========================================================
+
+safe_plain_df <- function(df) {
+  out <- as.data.frame(df, stringsAsFactors = FALSE)
+  rownames(out) <- NULL
+  out
+}
+
+round_df_4 <- function(df) {
+  df %>%
+    mutate(across(where(is.numeric), ~ round(.x, 4)))
+}
+
+safe_mean <- function(x) {
+  x <- x[is.finite(x)]
+  if (length(x) == 0) return(NA_real_)
+  mean(x)
+}
+
+safe_rmse <- function(sq_error) {
+  sq_error <- sq_error[is.finite(sq_error)]
+  if (length(sq_error) == 0) return(NA_real_)
+  sqrt(mean(sq_error))
+}
+
+collapse_unique <- function(x) {
+  x <- unique(stats::na.omit(x))
+  if (length(x) == 0) return(NA_character_)
+  paste(x, collapse = " | ")
+}
+
+# =========================================================
+# DATEN VORBEREITEN
+# Alle Cluster bleiben drin
+# =========================================================
+
+prep_length_term_prediction_data <- function(df,
+                                             response = "FRT",
+                                             use_speaker = FALSE) {
+  needed <- c(response, "nLetters", "nWords", "Participant", "Topic", "condition", "AOI", "aggr_level")
+  if (use_speaker) needed <- c(needed, "speaker")
+
+  missing_cols <- setdiff(needed, names(df))
+  if (length(missing_cols) > 0) {
+    stop("Fehlende Variablen: ", paste(missing_cols, collapse = ", "))
+  }
+
+  out <- df %>%
+    filter(!is.na(.data[[response]])) %>%
+    filter(.data[[response]] > 0) %>%
+    filter(!is.na(nLetters), !is.na(nWords)) %>%
+    filter(!is.na(Participant), !is.na(Topic), !is.na(condition), !is.na(AOI), !is.na(aggr_level))
+
+  if (use_speaker) {
+    out <- out %>% filter(!is.na(speaker))
+  }
+
+  out <- out %>%
+    mutate(
+      Participant = factor(Participant),
+      Topic = factor(Topic),
+      condition = factor(condition),
+      AOI = factor(AOI),
+      aggr_level = factor(aggr_level)
+    )
+
+  if (use_speaker) {
+    out <- out %>% mutate(speaker = factor(speaker))
+  }
+
+  cluster_sizes <- out %>%
+    distinct(aggr_level, AOI) %>%
+    count(aggr_level, name = "n_aoi_in_cluster")
+
+  list(
+    data = safe_plain_df(out),
+    cluster_sizes = cluster_sizes
+  )
+}
+
+# =========================================================
+# FORMELN PRO CLUSTER
+# =========================================================
+
+make_formula_length_term_cluster <- function(response = "FRT",
+                                             length_term = c("nLetters", "nWords"),
+                                             use_speaker = FALSE,
+                                             n_aoi_in_cluster = 1L) {
+  length_term <- match.arg(length_term)
+
+  rhs <- if (n_aoi_in_cluster > 1) {
+    if (use_speaker) {
+      paste("AOI * condition * speaker +", length_term, "+ (1 | Topic) + (1 | Participant)")
+    } else {
+      paste("AOI * condition +", length_term, "+ (1 | Topic) + (1 | Participant)")
+    }
+  } else {
+    if (use_speaker) {
+      paste("condition * speaker +", length_term, "+ (1 | Topic) + (1 | Participant)")
+    } else {
+      paste("condition +", length_term, "+ (1 | Topic) + (1 | Participant)")
+    }
+  }
+
+  as.formula(paste(response, "~", rhs))
+}
+
+# =========================================================
+# SPLIT CHECK PRO CLUSTER
+# =========================================================
+
+check_split_length_term_cluster <- function(train_df,
+                                            response = "FRT",
+                                            length_term = c("nLetters", "nWords"),
+                                            use_speaker = FALSE,
+                                            n_aoi_in_cluster = 1L) {
+  length_term <- match.arg(length_term)
+  reasons <- character(0)
+
+  if (nrow(train_df) == 0) reasons <- c(reasons, "empty_train")
+
+  if (dplyr::n_distinct(train_df$condition) < 2) {
+    reasons <- c(reasons, "condition_has_less_than_2_levels_in_train")
+  }
+
+  if (use_speaker && dplyr::n_distinct(train_df$speaker) < 2) {
+    reasons <- c(reasons, "speaker_has_less_than_2_levels_in_train")
+  }
+
+  if (n_aoi_in_cluster > 1 && dplyr::n_distinct(train_df$AOI) < 2) {
+    reasons <- c(reasons, "aoi_has_less_than_2_levels_in_train")
+  }
+
+  if (all(is.na(train_df[[length_term]])) || dplyr::n_distinct(train_df[[length_term]]) < 2) {
+    reasons <- c(reasons, paste0(length_term, "_has_less_than_2_values_in_train"))
+  }
+
+  if (any(!is.finite(train_df[[response]]))) {
+    reasons <- c(reasons, "non_finite_response_in_train")
+  }
+
+  if (any(train_df[[response]] <= 0, na.rm = TRUE)) {
+    reasons <- c(reasons, "non_positive_response_in_train")
+  }
+
+  if (any(!is.finite(train_df[[length_term]]))) {
+    reasons <- c(reasons, paste0("non_finite_", length_term, "_in_train"))
+  }
+
+  list(
+    ok = length(reasons) == 0,
+    reason = if (length(reasons) == 0) NA_character_ else paste(reasons, collapse = " | ")
+  )
+}
+
+# =========================================================
+# FIT
+# =========================================================
+
+fit_gamma_model <- function(df,
+                            formula,
+                            response_name) {
+  if (nrow(df) == 0) {
+    return(list(
+      fit_ok = FALSE,
+      fit = NULL,
+      fit_error = "empty_data",
+      fit_warning = NA_character_,
+      fit_nonposdef_hessian = NA,
+      fit_nonzero_convergence = NA
+    ))
+  }
+
+  if (any(df[[response_name]] <= 0, na.rm = TRUE)) {
+    return(list(
+      fit_ok = FALSE,
+      fit = NULL,
+      fit_error = "non_positive_response_in_data",
+      fit_warning = NA_character_,
+      fit_nonposdef_hessian = NA,
+      fit_nonzero_convergence = NA
+    ))
+  }
+
+  df_fit <- droplevels(df)
+
+  warns <- character(0)
+  msgs <- character(0)
+
+  fit <- withCallingHandlers(
+    tryCatch(
+      glmmTMB::glmmTMB(
+        formula = formula,
+        data = df_fit,
+        family = Gamma(link = "log")
+      ),
+      error = function(e) e
+    ),
+    warning = function(w) {
+      warns <<- c(warns, conditionMessage(w))
+      invokeRestart("muffleWarning")
+    },
+    message = function(m) {
+      msgs <<- c(msgs, conditionMessage(m))
+      invokeRestart("muffleMessage")
+    }
+  )
+
+  if (inherits(fit, "error")) {
+    return(list(
+      fit_ok = FALSE,
+      fit = NULL,
+      fit_error = conditionMessage(fit),
+      fit_warning = collapse_unique(c(warns, msgs)),
+      fit_nonposdef_hessian = NA,
+      fit_nonzero_convergence = NA
+    ))
+  }
+
+  fit_nonposdef_hessian <- tryCatch(
+    !isTRUE(fit$sdr$pdHess),
+    error = function(e) NA
+  )
+
+  fit_nonzero_convergence <- tryCatch(
+    {
+      conv <- fit$fit$convergence
+      if (is.null(conv)) NA else conv != 0
+    },
+    error = function(e) NA
+  )
+
+  list(
+    fit_ok = TRUE,
+    fit = fit,
+    fit_error = NA_character_,
+    fit_warning = collapse_unique(c(warns, msgs)),
+    fit_nonposdef_hessian = fit_nonposdef_hessian,
+    fit_nonzero_convergence = fit_nonzero_convergence
+  )
+}
+
+# =========================================================
+# EIN EXPERIMENT
+# Clusterweise Prediction
+# =========================================================
+
+run_length_term_prediction_one_experiment <- function(df,
+                                                      exp_name,
+                                                      response = "FRT",
+                                                      use_speaker = FALSE) {
+  prep <- prep_length_term_prediction_data(
+    df = df,
+    response = response,
+    use_speaker = use_speaker
+  )
+
+  dat <- prep$data
+  cluster_sizes <- prep$cluster_sizes
+
+  if (nrow(dat) == 0) {
+    return(list(
+      preds_raw = tibble(),
+      prediction_summary = tibble(),
+      prediction_comparison = tibble(),
+      compact_summary = tibble()
+    ))
+  }
+
+  aggr_levels <- unique(as.character(dat$aggr_level))
+
+  preds_raw <- purrr::map_dfr(c("nLetters", "nWords"), function(length_term_i) {
+    purrr::map_dfr(aggr_levels, function(aggr_i) {
+      dat_cluster <- dat %>%
+        filter(as.character(aggr_level) == aggr_i)
+
+      n_aoi_cluster <- cluster_sizes$n_aoi_in_cluster[
+        match(aggr_i, cluster_sizes$aggr_level)
+      ]
+
+      cluster_formula_type <- if (n_aoi_cluster > 1) "AOI_condition" else "condition_only"
+
+      topics_cluster <- unique(as.character(dat_cluster$Topic))
+
+      purrr::map_dfr(topics_cluster, function(topic_i) {
+        train_df <- dat_cluster %>%
+          filter(as.character(Topic) != topic_i)
+
+        test_df <- dat_cluster %>%
+          filter(as.character(Topic) == topic_i)
+
+        split_check <- check_split_length_term_cluster(
+          train_df = train_df,
+          response = response,
+          length_term = length_term_i,
+          use_speaker = use_speaker,
+          n_aoi_in_cluster = n_aoi_cluster
+        )
+
+        fit_out <- if (split_check$ok) {
+          fit_gamma_model(
+            df = train_df,
+            formula = make_formula_length_term_cluster(
+              response = response,
+              length_term = length_term_i,
+              use_speaker = use_speaker,
+              n_aoi_in_cluster = n_aoi_cluster
+            ),
+            response_name = response
+          )
+        } else {
+          list(
+            fit_ok = FALSE,
+            fit = NULL,
+            fit_error = "invalid_split",
+            fit_warning = NA_character_,
+            fit_nonposdef_hessian = NA,
+            fit_nonzero_convergence = NA
+          )
+        }
+
+        pred <- if (fit_out$fit_ok) {
+          tryCatch(
+            predict(
+              fit_out$fit,
+              newdata = test_df,
+              type = "response",
+              re.form = NULL,
+              allow.new.levels = TRUE
+            ),
+            error = function(e) rep(NA_real_, nrow(test_df))
+          )
+        } else {
+          rep(NA_real_, nrow(test_df))
+        }
+
+        tibble(
+          experiment = exp_name,
+          length_term = length_term_i,
+          heldout_topic = topic_i,
+          AOI = as.character(test_df$AOI),
+          aggr_level = aggr_i,
+          n_aoi_in_cluster = n_aoi_cluster,
+          cluster_formula_type = cluster_formula_type,
+          observed_FRT = test_df[[response]],
+          pred_FRT = as.numeric(pred),
+          abs_error_FRT = abs(test_df[[response]] - as.numeric(pred)),
+          sq_error_FRT = (test_df[[response]] - as.numeric(pred))^2,
+          fit_ok = fit_out$fit_ok,
+          fit_error = if (split_check$ok) fit_out$fit_error else "invalid_split",
+          fit_warning = fit_out$fit_warning,
+          fit_nonposdef_hessian = fit_out$fit_nonposdef_hessian,
+          fit_nonzero_convergence = fit_out$fit_nonzero_convergence
+        )
+      })
+    })
+  })
+
+  prediction_summary <- preds_raw %>%
+    group_by(
+      experiment, length_term, AOI, aggr_level,
+      n_aoi_in_cluster, cluster_formula_type
+    ) %>%
+    summarise(
+      n_pred = sum(!is.na(pred_FRT)),
+      rmse_FRT = safe_rmse(sq_error_FRT),
+      mae_FRT = safe_mean(abs_error_FRT),
+      .groups = "drop"
+    )
+
+  prediction_comparison <- prediction_summary %>%
+    select(
+      experiment,
+      AOI,
+      aggr_level,
+      n_aoi_in_cluster,
+      cluster_formula_type,
+      length_term,
+      n_pred,
+      rmse_FRT,
+      mae_FRT
+    ) %>%
+    pivot_wider(
+      names_from = length_term,
+      values_from = c(n_pred, rmse_FRT, mae_FRT),
+      names_sep = "__"
+    ) %>%
+    mutate(
+      delta_rmse_nWords_minus_nLetters = rmse_FRT__nWords - rmse_FRT__nLetters,
+      delta_mae_nWords_minus_nLetters = mae_FRT__nWords - mae_FRT__nLetters,
+      winner_rmse = case_when(
+        is.na(delta_rmse_nWords_minus_nLetters) ~ NA_character_,
+        delta_rmse_nWords_minus_nLetters > 0 ~ "nLetters",
+        delta_rmse_nWords_minus_nLetters < 0 ~ "nWords",
+        TRUE ~ "equal"
+      ),
+      winner_mae = case_when(
+        is.na(delta_mae_nWords_minus_nLetters) ~ NA_character_,
+        delta_mae_nWords_minus_nLetters > 0 ~ "nLetters",
+        delta_mae_nWords_minus_nLetters < 0 ~ "nWords",
+        TRUE ~ "equal"
+      )
+    ) %>%
+    filter(
+      !is.na(n_pred__nLetters),
+      !is.na(n_pred__nWords)
+    )
+
+  compact_summary <- prediction_comparison %>%
+    group_by(experiment) %>%
+    summarise(
+      n_aoi = dplyr::n(),
+      mean_rmse_nLetters = safe_mean(rmse_FRT__nLetters),
+      mean_rmse_nWords = safe_mean(rmse_FRT__nWords),
+      mean_mae_nLetters = safe_mean(mae_FRT__nLetters),
+      mean_mae_nWords = safe_mean(mae_FRT__nWords),
+      nLetters_better_rmse = sum(winner_rmse == "nLetters", na.rm = TRUE),
+      nWords_better_rmse = sum(winner_rmse == "nWords", na.rm = TRUE),
+      equal_rmse = sum(winner_rmse == "equal", na.rm = TRUE),
+      nLetters_better_mae = sum(winner_mae == "nLetters", na.rm = TRUE),
+      nWords_better_mae = sum(winner_mae == "nWords", na.rm = TRUE),
+      equal_mae = sum(winner_mae == "equal", na.rm = TRUE),
+      delta_mean_rmse_nWords_minus_nLetters = mean_rmse_nWords - mean_rmse_nLetters,
+      delta_mean_mae_nWords_minus_nLetters = mean_mae_nWords - mean_mae_nLetters,
+      .groups = "drop"
+    )
+
+  list(
+    preds_raw = preds_raw,
+    prediction_summary = prediction_summary,
+    prediction_comparison = prediction_comparison,
+    compact_summary = compact_summary
+  )
+}
+
+# =========================================================
+# ÜBER ALLE EXPERIMENTE
+# =========================================================
+
+run_length_term_prediction_all <- function(dfs,
+                                           response = "FRT",
+                                           experiments_with_speaker = c("n_bed", "n_ein", "CS")) {
+  nested <- purrr::imap(dfs, function(df, exp_name) {
+    run_length_term_prediction_one_experiment(
+      df = df,
+      exp_name = exp_name,
+      response = response,
+      use_speaker = exp_name %in% experiments_with_speaker
+    )
+  })
+
+  compact_summary_all <- bind_rows(purrr::map(nested, "compact_summary"))
+
+  compact_summary_overall <- bind_rows(purrr::map(nested, "prediction_comparison")) %>%
+    summarise(
+      n_aoi = dplyr::n(),
+      mean_rmse_nLetters = safe_mean(rmse_FRT__nLetters),
+      mean_rmse_nWords = safe_mean(rmse_FRT__nWords),
+      mean_mae_nLetters = safe_mean(mae_FRT__nLetters),
+      mean_mae_nWords = safe_mean(mae_FRT__nWords),
+      nLetters_better_rmse = sum(winner_rmse == "nLetters", na.rm = TRUE),
+      nWords_better_rmse = sum(winner_rmse == "nWords", na.rm = TRUE),
+      equal_rmse = sum(winner_rmse == "equal", na.rm = TRUE),
+      nLetters_better_mae = sum(winner_mae == "nLetters", na.rm = TRUE),
+      nWords_better_mae = sum(winner_mae == "nWords", na.rm = TRUE),
+      equal_mae = sum(winner_mae == "equal", na.rm = TRUE),
+      delta_mean_rmse_nWords_minus_nLetters = mean_rmse_nWords - mean_rmse_nLetters,
+      delta_mean_mae_nWords_minus_nLetters = mean_mae_nWords - mean_mae_nLetters
+    ) %>%
+    mutate(experiment = "overall") %>%
+    select(experiment, everything())
+
+  list(
+    nested = nested,
+    preds_raw_all = bind_rows(purrr::map(nested, "preds_raw")),
+    prediction_summary_all = bind_rows(purrr::map(nested, "prediction_summary")),
+    prediction_comparison_all = bind_rows(purrr::map(nested, "prediction_comparison")),
+    compact_summary_all = compact_summary_all,
+    compact_summary_overall = compact_summary_overall
+  )
+}
+
+# =========================================================
+# AUSFÜHREN
+# =========================================================
+
+res_length_term_prediction <- run_length_term_prediction_all(
+  dfs = dfs,
+  response = "FRT",
+  experiments_with_speaker = experiments_with_speaker
+)
+
+# =========================================================
+# OUTPUTS
+# =========================================================
+
+# AOI-spezifische Prediction pro Längenterm
+#round_df_4(res_length_term_prediction$prediction_summary_all)
+
+# Direkter AOI-Vergleich nWords vs nLetters
+round_df_4(res_length_term_prediction$prediction_comparison_all)
+
+# Knappe Zusammenfassung pro Experiment
+round_df_4(res_length_term_prediction$compact_summary_all)
+
+# Noch knapper: alles zusammen
+#round_df_4(res_length_term_prediction$compact_summary_overall)
+```
+Resultat: Der Nachteil von nWords liegt hier in etwas schlechterer Prediction, und vor allem darin, dass der Term in mehreren Clustern überhaupt keine prädiktiv nutzbaren Vorhersagen liefert.
+
+2) Fitprobleme / Warnungen in Holdout-Splits- Gamma
+```{r}
+library(dplyr)
+library(tidyr)
+library(purrr)
+library(tibble)
+library(glmmTMB)
+library(lme4)
+
+# =========================================================
+# INPUT
+# =========================================================
+
+dfs <- list(
+  c_bed = c_bed,
+  c_ein = c_ein,
+  n_bed = n_bed,
+  n_ein = n_ein,
+  CS    = CS
+)
+
+experiments_with_speaker <- c("n_bed", "n_ein", "CS")
+
+# =========================================================
+# HELFER
+# =========================================================
+
+safe_plain_df <- function(df) {
+  out <- as.data.frame(df, stringsAsFactors = FALSE)
+  rownames(out) <- NULL
+  out
+}
+
+round_df_4 <- function(df) {
+  df %>%
+    mutate(across(where(is.numeric), ~ round(.x, 4)))
+}
+
+collapse_unique <- function(x) {
+  x <- unique(stats::na.omit(x))
+  if (length(x) == 0) return(NA_character_)
+  paste(x, collapse = " | ")
+}
+
+# =========================================================
+# DATEN VORBEREITEN
+# Alle Cluster bleiben drin
+# =========================================================
+
+prep_length_term_fitprob_data <- function(df,
+                                          response = "FRT",
+                                          use_speaker = FALSE) {
+  needed <- c(response, "nLetters", "nWords", "Participant", "Topic", "condition", "AOI", "aggr_level")
+  if (use_speaker) needed <- c(needed, "speaker")
+
+  missing_cols <- setdiff(needed, names(df))
+  if (length(missing_cols) > 0) {
+    stop("Fehlende Variablen: ", paste(missing_cols, collapse = ", "))
+  }
+
+  out <- df %>%
+    filter(!is.na(.data[[response]])) %>%
+    filter(.data[[response]] > 0) %>%
+    filter(!is.na(nLetters), !is.na(nWords)) %>%
+    filter(!is.na(Participant), !is.na(Topic), !is.na(condition), !is.na(AOI), !is.na(aggr_level))
+
+  if (use_speaker) {
+    out <- out %>% filter(!is.na(speaker))
+  }
+
+  out <- out %>%
+    mutate(
+      Participant = factor(Participant),
+      Topic = factor(Topic),
+      condition = factor(condition),
+      AOI = factor(AOI),
+      aggr_level = factor(aggr_level)
+    )
+
+  if (use_speaker) {
+    out <- out %>% mutate(speaker = factor(speaker))
+  }
+
+  cluster_sizes <- out %>%
+    distinct(aggr_level, AOI) %>%
+    count(aggr_level, name = "n_aoi_in_cluster")
+
+  list(
+    data = safe_plain_df(out),
+    cluster_sizes = cluster_sizes
+  )
+}
+
+# =========================================================
+# FORMELN PRO CLUSTER
+# =========================================================
+
+make_formula_length_term_cluster <- function(response = "FRT",
+                                             length_term = c("nLetters", "nWords"),
+                                             use_speaker = FALSE,
+                                             n_aoi_in_cluster = 1L) {
+  length_term <- match.arg(length_term)
+
+  rhs <- if (n_aoi_in_cluster > 1) {
+    if (use_speaker) {
+      paste("AOI * condition * speaker +", length_term, "+ (1 | Topic) + (1 | Participant)")
+    } else {
+      paste("AOI * condition +", length_term, "+ (1 | Topic) + (1 | Participant)")
+    }
+  } else {
+    if (use_speaker) {
+      paste("condition * speaker +", length_term, "+ (1 | Topic) + (1 | Participant)")
+    } else {
+      paste("condition +", length_term, "+ (1 | Topic) + (1 | Participant)")
+    }
+  }
+
+  as.formula(paste(response, "~", rhs))
+}
+
+# =========================================================
+# RANK-DEFICIENCY-CHECK FÜR FIXED EFFECTS
+# =========================================================
+
+check_rank_deficiency_fixed <- function(formula, df) {
+  fixed_formula <- lme4::nobars(formula)
+
+  mm <- tryCatch(
+    model.matrix(fixed_formula, data = df),
+    error = function(e) e
+  )
+
+  if (inherits(mm, "error")) {
+    return(tibble(
+      rank_check_ok = FALSE,
+      rank_deficient = NA,
+      n_model_matrix_cols = NA_integer_,
+      rank_matrix = NA_integer_,
+      n_aliased_cols = NA_integer_,
+      aliased_columns = NA_character_,
+      rank_message = conditionMessage(mm)
+    ))
+  }
+
+  qrobj <- tryCatch(
+    qr(mm),
+    error = function(e) e
+  )
+
+  if (inherits(qrobj, "error")) {
+    return(tibble(
+      rank_check_ok = FALSE,
+      rank_deficient = NA,
+      n_model_matrix_cols = ncol(mm),
+      rank_matrix = NA_integer_,
+      n_aliased_cols = NA_integer_,
+      aliased_columns = NA_character_,
+      rank_message = conditionMessage(qrobj)
+    ))
+  }
+
+  rank_mm <- qrobj$rank
+  p_mm <- ncol(mm)
+  rank_def <- rank_mm < p_mm
+
+  aliased_cols <- NA_character_
+  n_aliased <- 0L
+
+  if (rank_def) {
+    pivot_idx <- qrobj$pivot
+    aliased_idx <- pivot_idx[seq.int(from = rank_mm + 1L, to = p_mm)]
+    aliased_names <- colnames(mm)[aliased_idx]
+    n_aliased <- length(aliased_names)
+    aliased_cols <- paste(aliased_names, collapse = " | ")
+  }
+
+  tibble(
+    rank_check_ok = TRUE,
+    rank_deficient = rank_def,
+    n_model_matrix_cols = p_mm,
+    rank_matrix = rank_mm,
+    n_aliased_cols = n_aliased,
+    aliased_columns = aliased_cols,
+    rank_message = NA_character_
+  )
+}
+
+# =========================================================
+# FIT OHNE SPLIT PROTECTION
+# plus sauberer Rank-Deficiency-Check
+# =========================================================
+
+fit_gamma_model_capture_no_splitcheck <- function(df,
+                                                  formula) {
+  warns <- character(0)
+  msgs <- character(0)
+
+  rank_info <- check_rank_deficiency_fixed(
+    formula = formula,
+    df = droplevels(df)
+  )
+
+  fit <- withCallingHandlers(
+    tryCatch(
+      glmmTMB::glmmTMB(
+        formula = formula,
+        data = droplevels(df),
+        family = Gamma(link = "log")
+      ),
+      error = function(e) e
+    ),
+    warning = function(w) {
+      warns <<- c(warns, conditionMessage(w))
+      invokeRestart("muffleWarning")
+    },
+    message = function(m) {
+      msgs <<- c(msgs, conditionMessage(m))
+      invokeRestart("muffleMessage")
+    }
+  )
+
+  if (inherits(fit, "error")) {
+    return(
+      tibble(
+        fit_ok = FALSE,
+        fit_error = conditionMessage(fit),
+        fit_warning = collapse_unique(c(warns, msgs)),
+        fit_nonposdef_hessian = NA,
+        fit_nonzero_convergence = NA,
+        n_warning_messages = length(unique(c(warns, msgs)))
+      ) %>%
+        bind_cols(rank_info)
+    )
+  }
+
+  fit_nonposdef_hessian <- tryCatch(
+    !isTRUE(fit$sdr$pdHess),
+    error = function(e) NA
+  )
+
+  fit_nonzero_convergence <- tryCatch(
+    {
+      conv <- fit$fit$convergence
+      if (is.null(conv)) NA else conv != 0
+    },
+    error = function(e) NA
+  )
+
+  tibble(
+    fit_ok = TRUE,
+    fit_error = NA_character_,
+    fit_warning = collapse_unique(c(warns, msgs)),
+    fit_nonposdef_hessian = fit_nonposdef_hessian,
+    fit_nonzero_convergence = fit_nonzero_convergence,
+    n_warning_messages = length(unique(c(warns, msgs)))
+  ) %>%
+    bind_cols(rank_info)
+}
+
+# =========================================================
+# EIN EXPERIMENT
+# Clusterweise Holdout-Fits ohne split protection
+# =========================================================
+
+run_length_term_fitprob_one_experiment_no_splitcheck <- function(df,
+                                                                 exp_name,
+                                                                 response = "FRT",
+                                                                 use_speaker = FALSE) {
+  prep <- prep_length_term_fitprob_data(
+    df = df,
+    response = response,
+    use_speaker = use_speaker
+  )
+
+  dat <- prep$data
+  cluster_sizes <- prep$cluster_sizes
+
+  if (nrow(dat) == 0) {
+    return(list(
+      split_fits = tibble(),
+      summary_by_length = tibble(),
+      comparison = tibble(),
+      compact = tibble()
+    ))
+  }
+
+  aggr_levels <- unique(as.character(dat$aggr_level))
+
+  split_fits <- purrr::map_dfr(c("nLetters", "nWords"), function(length_term_i) {
+    purrr::map_dfr(aggr_levels, function(aggr_i) {
+      dat_cluster <- dat %>%
+        filter(as.character(aggr_level) == aggr_i)
+
+      n_aoi_cluster <- cluster_sizes$n_aoi_in_cluster[
+        match(aggr_i, as.character(cluster_sizes$aggr_level))
+      ]
+
+      cluster_formula_type <- if (n_aoi_cluster > 1) "AOI_condition" else "condition_only"
+
+      topics_cluster <- unique(as.character(dat_cluster$Topic))
+
+      purrr::map_dfr(topics_cluster, function(topic_i) {
+        train_df <- dat_cluster %>%
+          filter(as.character(Topic) != topic_i)
+
+        test_df <- dat_cluster %>%
+          filter(as.character(Topic) == topic_i)
+
+        formula_i <- make_formula_length_term_cluster(
+          response = response,
+          length_term = length_term_i,
+          use_speaker = use_speaker,
+          n_aoi_in_cluster = n_aoi_cluster
+        )
+
+        fit_info <- fit_gamma_model_capture_no_splitcheck(
+          df = train_df,
+          formula = formula_i
+        )
+
+        tibble(
+          experiment = exp_name,
+          length_term = length_term_i,
+          aggr_level = aggr_i,
+          n_aoi_in_cluster = n_aoi_cluster,
+          cluster_formula_type = cluster_formula_type,
+          heldout_topic = topic_i,
+          n_train = nrow(train_df),
+          n_test = nrow(test_df),
+          formula = paste(deparse(formula_i), collapse = " ")
+        ) %>%
+          bind_cols(fit_info)
+      })
+    })
+  })
+
+  summary_by_length <- split_fits %>%
+    group_by(experiment, length_term) %>%
+    summarise(
+      n_splits = dplyr::n(),
+      n_fit_ok = sum(fit_ok %in% TRUE, na.rm = TRUE),
+      n_fit_failed = sum(fit_ok %in% FALSE, na.rm = TRUE),
+      n_rank_check_failed = sum(rank_check_ok %in% FALSE, na.rm = TRUE),
+      n_rank_deficient = sum(rank_deficient %in% TRUE, na.rm = TRUE),
+      total_aliased_cols = sum(n_aliased_cols, na.rm = TRUE),
+      n_nonposdef_hessian = sum(fit_nonposdef_hessian %in% TRUE, na.rm = TRUE),
+      n_nonzero_convergence = sum(fit_nonzero_convergence %in% TRUE, na.rm = TRUE),
+      n_with_any_warning = sum(!is.na(fit_warning), na.rm = TRUE),
+      total_warning_messages = sum(n_warning_messages, na.rm = TRUE),
+      prop_fit_failed = n_fit_failed / n_splits,
+      prop_rank_deficient = n_rank_deficient / n_splits,
+      prop_nonposdef_hessian = n_nonposdef_hessian / n_splits,
+      prop_nonzero_convergence = n_nonzero_convergence / n_splits,
+      prop_with_any_warning = n_with_any_warning / n_splits,
+      .groups = "drop"
+    )
+
+  comparison <- summary_by_length %>%
+    select(
+      experiment,
+      length_term,
+      n_splits,
+      n_fit_ok,
+      n_fit_failed,
+      n_rank_check_failed,
+      n_rank_deficient,
+      total_aliased_cols,
+      n_nonposdef_hessian,
+      n_nonzero_convergence,
+      n_with_any_warning,
+      total_warning_messages,
+      prop_fit_failed,
+      prop_rank_deficient,
+      prop_nonposdef_hessian,
+      prop_nonzero_convergence,
+      prop_with_any_warning
+    ) %>%
+    pivot_wider(
+      names_from = length_term,
+      values_from = -c(experiment, length_term),
+      names_sep = "__"
+    ) %>%
+    mutate(
+      delta_prop_fit_failed_nWords_minus_nLetters =
+        prop_fit_failed__nWords - prop_fit_failed__nLetters,
+      delta_prop_rankdef_nWords_minus_nLetters =
+        prop_rank_deficient__nWords - prop_rank_deficient__nLetters,
+      delta_prop_hessian_nWords_minus_nLetters =
+        prop_nonposdef_hessian__nWords - prop_nonposdef_hessian__nLetters,
+      delta_prop_conv_nWords_minus_nLetters =
+        prop_nonzero_convergence__nWords - prop_nonzero_convergence__nLetters,
+      delta_prop_warning_nWords_minus_nLetters =
+        prop_with_any_warning__nWords - prop_with_any_warning__nLetters
+    )
+
+  compact <- comparison %>%
+    transmute(
+      experiment = experiment,
+      n_splits = n_splits__nLetters,
+      fit_failed_nLetters = n_fit_failed__nLetters,
+      fit_failed_nWords = n_fit_failed__nWords,
+      rankdef_nLetters = n_rank_deficient__nLetters,
+      rankdef_nWords = n_rank_deficient__nWords,
+      aliased_cols_nLetters = total_aliased_cols__nLetters,
+      aliased_cols_nWords = total_aliased_cols__nWords,
+      hessian_nLetters = n_nonposdef_hessian__nLetters,
+      hessian_nWords = n_nonposdef_hessian__nWords,
+      conv_nLetters = n_nonzero_convergence__nLetters,
+      conv_nWords = n_nonzero_convergence__nWords,
+      warnings_nLetters = n_with_any_warning__nLetters,
+      warnings_nWords = n_with_any_warning__nWords,
+      warning_msgs_nLetters = total_warning_messages__nLetters,
+      warning_msgs_nWords = total_warning_messages__nWords
+    )
+
+  list(
+    split_fits = split_fits,
+    summary_by_length = summary_by_length,
+    comparison = comparison,
+    compact = compact
+  )
+}
+
+# =========================================================
+# ÜBER ALLE EXPERIMENTE
+# =========================================================
+
+run_length_term_fitprob_all_no_splitcheck <- function(dfs,
+                                                      response = "FRT",
+                                                      experiments_with_speaker = c("n_bed", "n_ein", "CS")) {
+  nested <- purrr::imap(dfs, function(df, exp_name) {
+    run_length_term_fitprob_one_experiment_no_splitcheck(
+      df = df,
+      exp_name = exp_name,
+      response = response,
+      use_speaker = exp_name %in% experiments_with_speaker
+    )
+  })
+
+  compact_all <- bind_rows(purrr::map(nested, "compact"))
+
+  overall <- bind_rows(purrr::map(nested, "summary_by_length")) %>%
+    group_by(length_term) %>%
+    summarise(
+      n_splits = sum(n_splits, na.rm = TRUE),
+      n_fit_ok = sum(n_fit_ok, na.rm = TRUE),
+      n_fit_failed = sum(n_fit_failed, na.rm = TRUE),
+      n_rank_check_failed = sum(n_rank_check_failed, na.rm = TRUE),
+      n_rank_deficient = sum(n_rank_deficient, na.rm = TRUE),
+      total_aliased_cols = sum(total_aliased_cols, na.rm = TRUE),
+      n_nonposdef_hessian = sum(n_nonposdef_hessian, na.rm = TRUE),
+      n_nonzero_convergence = sum(n_nonzero_convergence, na.rm = TRUE),
+      n_with_any_warning = sum(n_with_any_warning, na.rm = TRUE),
+      total_warning_messages = sum(total_warning_messages, na.rm = TRUE),
+      prop_fit_failed = n_fit_failed / n_splits,
+      prop_rank_deficient = n_rank_deficient / n_splits,
+      prop_nonposdef_hessian = n_nonposdef_hessian / n_splits,
+      prop_nonzero_convergence = n_nonzero_convergence / n_splits,
+      prop_with_any_warning = n_with_any_warning / n_splits,
+      .groups = "drop"
+    )
+
+  list(
+    nested = nested,
+    split_fits_all = bind_rows(purrr::map(nested, "split_fits")),
+    summary_by_length_all = bind_rows(purrr::map(nested, "summary_by_length")),
+    comparison_all = bind_rows(purrr::map(nested, "comparison")),
+    compact_all = compact_all,
+    overall = overall
+  )
+}
+
+# =========================================================
+# AUSFÜHREN
+# =========================================================
+
+res_length_term_fitprob_no_splitcheck <- run_length_term_fitprob_all_no_splitcheck(
+  dfs = dfs,
+  response = "FRT",
+  experiments_with_speaker = experiments_with_speaker
+)
+
+# =========================================================
+# OUTPUTS
+# =========================================================
+
+# Detailtabelle pro Split
+#round_df_4(res_length_term_fitprob_no_splitcheck$split_fits_all)
+
+# Zusammenfassung pro Experiment x length_term
+#round_df_4(res_length_term_fitprob_no_splitcheck$summary_by_length_all)
+
+# Direkter Vergleich nWords vs nLetters
+#round_df_4(res_length_term_fitprob_no_splitcheck$comparison_all)
+
+# Knappe Tabelle pro Experiment
+round_df_4(res_length_term_fitprob_no_splitcheck$compact_all)
+
+# Noch knapper: alles zusammen
+round_df_4(res_length_term_fitprob_no_splitcheck$overall)
+```
+
+Resultat: Splits passen manchmal bei nWords nicht. Rank deficiencies
+
+
+
+Fazit: 
+nWords hat weniger durch den Stimulus verursachte Variation als nLetters.
+Daher sollte nLetters sauberer schätzbar sein. 
+
+
+Rank deficiencies treten auf vor allem wenn kein Längenunterschied in split zu erkennen ist. Das ist bei vollen Daten also okay, beziehungsweise gewünscht. 
+
+
+Also hier: nLetters werden gewählt, da sie mehr Variation mit sich tragen und so besser geschätzt werden können.
+
+
+Die Clusteraggregation erhöht in den meisten Fällen die Zahl unterschiedlicher nLetters-Werte deutlich und verbessert damit die numerische Identifizierbarkeit eines globalen linearen Längenterms. Das spricht dafür, Aggregation zu nutzen, wenn Länge als Kovariate und nicht über Normierung berücksichtigt werden soll. Allerdings bleibt nLetters inhaltlich stark an AOI x condition x Topic gebunden und ist damit keine frei variierende Kovariate. Die Aggregation verbessert daher vor allem die technische Schätzbarkeit des linearen Längenterms, garantiert aber keine vollständig saubere Trennung von Längen- und Condition-Effekten.
+
+
+Da die Annahmen einer einfachen Normierung in unseren Daten nicht plausibel erfüllt waren, wurde Länge nicht über eine Vorab-Normierung, sondern als Kovariate im Modell berücksichtigt. Um die Schätzbarkeit dieses Längenterms zu verbessern, wurden in den aggregierten Analysen AOIs innerhalb inhaltlich definierter Cluster zusammengefasst. Hintergrund war, dass ein globaler linearer Längeneffekt nur dann stabil schätzbar ist, wenn innerhalb der jeweiligen Modelleinheit genügend Variation in der Längenvariable vorliegt. Deshalb wurde pro Cluster die Zahl unterschiedlicher nLetters-Werte geprüft. Diese lag in den aggregierten Clustern durchweg über sehr kleinen Minimalwerten und war damit für einen einfachen linearen Term grundsätzlich ausreichend. Die Aggregation wurde daher als pragmatische Strategie verstanden, um die numerische Identifizierbarkeit des linearen Längeneffekts zu erhöhen, ohne auf eine in den Daten nicht gestützte Normierung zurückzugreifen.
+
+
+
+
+
+***wie gehen wir mit nLetters um?***
+
+
+Es geht darum zu verstehen, welches das beste Handling unserer Länge ist. 
+
+Diese Tests führen wir vorerst mit Gamma und log-link, später kann man sie mit der ausgewählten Modellfamilie aus bestätigen. 
+
+Es gibt 3 Plausible nutzen für nLetters. 
+
+- nLetters linear - base
+- nLetters in interaktion mit AOI (brauchen AOIs unterschiedliche lineare Steigungen)
+- nLetters als spline
+- nLetters als spline x AOI (brauchen AOIs unterschiedliche nichtlineare Formen)
+
+
+Um zu wissen ob eine komplexere Aufnahme des Längenterms sinnvoll ist, müssen wir wissen: 
+- ob AOIs wirklich unterschiedliche Längensteigungen brauchen
+- ob ein Spline EDF > 1 liefert
+- ob komplexere Modelle technisch stabil bleiben
+- ob sie Prediction oder Fit wirklich verbessern
+
+
+Wir schauen zuerst nach der Interaktion mit AOI x nLetters
+```{r}
+library(dplyr)
+library(purrr)
+library(tidyr)
+library(tibble)
+library(glmmTMB)
+
+# =========================================================
+# INPUT
+# Erwartet vorhandene Datensätze:
+# c_bed, c_ein, n_bed, n_ein, CS
+# =========================================================
+
+dfs <- list(
+  c_bed = c_bed,
+  c_ein = c_ein,
+  n_bed = n_bed,
+  n_ein = n_ein,
+  CS    = CS
+)
+
+experiments_with_speaker <- c("n_bed", "n_ein", "CS")
+
+# =========================================================
+# HELFER
+# =========================================================
+
+round_df_4 <- function(df) {
+  df %>%
+    mutate(across(where(is.numeric), ~ round(.x, 4)))
+}
+
+safe_plain_df <- function(df) {
+  out <- as.data.frame(df, stringsAsFactors = FALSE)
+  rownames(out) <- NULL
+  out
+}
+
+collapse_unique <- function(x) {
+  x <- unique(stats::na.omit(x))
+  if (length(x) == 0) return(NA_character_)
+  paste(x, collapse = " | ")
+}
+
+prep_cluster_data <- function(df,
+                              aggr_value,
+                              response = "FRT",
+                              use_speaker = FALSE) {
+  needed <- c(response, "nLetters", "Participant", "Topic", "condition", "AOI", "aggr_level")
+  if (use_speaker) needed <- c(needed, "speaker")
+
+  missing_cols <- setdiff(needed, names(df))
+  if (length(missing_cols) > 0) {
+    stop(
+      "Fehlende Variablen: ",
+      paste(missing_cols, collapse = ", ")
+    )
+  }
+
+  out <- df %>%
+    filter(as.character(aggr_level) == as.character(aggr_value)) %>%
+    filter(!is.na(.data[[response]])) %>%
+    filter(.data[[response]] > 0) %>%
+    filter(!is.na(nLetters)) %>%
+    filter(!is.na(Participant), !is.na(Topic), !is.na(condition), !is.na(AOI), !is.na(aggr_level)) %>%
+    mutate(
+      Participant = factor(Participant),
+      Topic = factor(Topic),
+      condition = factor(condition),
+      AOI = factor(AOI),
+      aggr_level = factor(aggr_level)
+    ) %>%
+    droplevels()
+
+  if (use_speaker) {
+    out <- out %>%
+      filter(!is.na(speaker)) %>%
+      mutate(speaker = factor(speaker))
+  }
+
+  safe_plain_df(out)
+}
+
+make_formula_simple <- function(use_speaker = FALSE,
+                                n_aoi = 1L,
+                                response = "FRT") {
+  rhs <- if (n_aoi > 1) {
+    if (use_speaker) {
+      "AOI * condition * speaker + nLetters + (1 | Topic) + (1 | Participant)"
+    } else {
+      "AOI * condition + nLetters + (1 | Topic) + (1 | Participant)"
+    }
+  } else {
+    if (use_speaker) {
+      "condition * speaker + nLetters + (1 | Topic) + (1 | Participant)"
+    } else {
+      "condition + nLetters + (1 | Topic) + (1 | Participant)"
+    }
+  }
+
+  as.formula(paste(response, "~", rhs))
+}
+
+make_formula_aoi_length <- function(use_speaker = FALSE,
+                                    response = "FRT") {
+  rhs <- if (use_speaker) {
+    "AOI * condition * speaker + AOI * nLetters + (1 | Topic) + (1 | Participant)"
+  } else {
+    "AOI * condition + AOI * nLetters + (1 | Topic) + (1 | Participant)"
+  }
+
+  as.formula(paste(response, "~", rhs))
+}
+
+fit_gamma_capture <- function(formula, data) {
+  warns <- character(0)
+  msgs <- character(0)
+
+  fit <- withCallingHandlers(
+    tryCatch(
+      glmmTMB::glmmTMB(
+        formula = formula,
+        data = data,
+        family = Gamma(link = "log")
+      ),
+      error = function(e) e
+    ),
+    warning = function(w) {
+      warns <<- c(warns, conditionMessage(w))
+      invokeRestart("muffleWarning")
+    },
+    message = function(m) {
+      msgs <<- c(msgs, conditionMessage(m))
+      invokeRestart("muffleMessage")
+    }
+  )
+
+  if (inherits(fit, "error")) {
+    return(list(
+      fit_ok = FALSE,
+      fit = NULL,
+      fit_error = conditionMessage(fit),
+      fit_warning = collapse_unique(c(warns, msgs)),
+      nonposdef_hessian = NA,
+      nonzero_convergence = NA
+    ))
+  }
+
+  nonposdef_hessian <- tryCatch(
+    !isTRUE(fit$sdr$pdHess),
+    error = function(e) NA
+  )
+
+  nonzero_convergence <- tryCatch(
+    {
+      conv <- fit$fit$convergence
+      if (is.null(conv)) NA else conv != 0
+    },
+    error = function(e) NA
+  )
+
+  list(
+    fit_ok = TRUE,
+    fit = fit,
+    fit_error = NA_character_,
+    fit_warning = collapse_unique(c(warns, msgs)),
+    nonposdef_hessian = nonposdef_hessian,
+    nonzero_convergence = nonzero_convergence
+  )
+}
+
+run_one_cluster_length_interaction_test <- function(df,
+                                                    exp_name,
+                                                    aggr_value,
+                                                    response = "FRT",
+                                                    use_speaker = FALSE) {
+  dat <- prep_cluster_data(
+    df = df,
+    aggr_value = aggr_value,
+    response = response,
+    use_speaker = use_speaker
+  )
+
+  n_aoi <- nlevels(droplevels(dat$AOI))
+
+  base_info <- tibble(
+    experiment = exp_name,
+    aggr_level = as.character(aggr_value),
+    n_obs = nrow(dat),
+    n_aoi_in_cluster = n_aoi,
+    use_speaker = use_speaker
+  )
+
+  if (nrow(dat) == 0) {
+    return(
+      base_info %>%
+        mutate(
+          comparison_applicable = FALSE,
+          reason = "empty_cluster_after_filtering",
+          aic_simple = NA_real_,
+          aic_aoi_length = NA_real_,
+          delta_aoi_simple = NA_real_
+        )
+    )
+  }
+
+  if (n_aoi < 2) {
+    fit_simple <- fit_gamma_capture(
+      formula = make_formula_simple(
+        use_speaker = use_speaker,
+        n_aoi = n_aoi,
+        response = response
+      ),
+      data = dat
+    )
+
+    return(
+      base_info %>%
+        mutate(
+          comparison_applicable = FALSE,
+          reason = "not_applicable_single_AOI_cluster",
+          aic_simple = if (!is.null(fit_simple$fit)) AIC(fit_simple$fit) else NA_real_,
+          aic_aoi_length = NA_real_,
+          delta_aoi_simple = NA_real_
+        )
+    )
+  }
+
+  fit_simple <- fit_gamma_capture(
+    formula = make_formula_simple(
+      use_speaker = use_speaker,
+      n_aoi = n_aoi,
+      response = response
+    ),
+    data = dat
+  )
+
+  fit_aoi_length <- fit_gamma_capture(
+    formula = make_formula_aoi_length(
+      use_speaker = use_speaker,
+      response = response
+    ),
+    data = dat
+  )
+
+  aic_simple <- if (!is.null(fit_simple$fit)) AIC(fit_simple$fit) else NA_real_
+  aic_aoi_length <- if (!is.null(fit_aoi_length$fit)) AIC(fit_aoi_length$fit) else NA_real_
+  delta_aoi_simple <- aic_aoi_length - aic_simple
+
+  base_info %>%
+    mutate(
+      comparison_applicable = TRUE,
+      reason = NA_character_,
+      aic_simple = aic_simple,
+      aic_aoi_length = aic_aoi_length,
+      delta_aoi_simple = delta_aoi_simple
+    )
+}
+
+run_all_cluster_length_interaction_tests <- function(dfs,
+                                                     response = "FRT",
+                                                     experiments_with_speaker = c("n_bed", "n_ein", "CS")) {
+  res <- purrr::imap(dfs, function(df, exp_name) {
+    use_speaker <- exp_name %in% experiments_with_speaker
+    aggr_vals <- unique(as.character(df$aggr_level))
+
+    purrr::map_dfr(aggr_vals, function(ag) {
+      run_one_cluster_length_interaction_test(
+        df = df,
+        exp_name = exp_name,
+        aggr_value = ag,
+        response = response,
+        use_speaker = use_speaker
+      )
+    })
+  })
+
+  comparison_all <- bind_rows(res) %>%
+    arrange(experiment, aggr_level) %>%
+    select(
+      experiment,
+      aggr_level,
+      n_obs,
+      n_aoi_in_cluster,
+      comparison_applicable,
+      aic_simple,
+      aic_aoi_length,
+      delta_aoi_simple
+    ) %>%
+    round_df_4()
+
+  summary_all <- comparison_all %>%
+    group_by(experiment) %>%
+    summarise(
+      n_clusters = n(),
+      n_applicable_clusters = sum(comparison_applicable %in% TRUE, na.rm = TRUE),
+      mean_delta_aoi_simple = mean(delta_aoi_simple, na.rm = TRUE),
+      .groups = "drop"
+    ) %>%
+    round_df_4()
+
+  list(
+    by_experiment = res,
+    comparison_all = comparison_all,
+    summary_all = summary_all
+  )
+}
+
+# =========================================================
+# RECHNEN
+# =========================================================
+
+res_aoi_nletters_gamma <- run_all_cluster_length_interaction_tests(
+  dfs = dfs,
+  response = "FRT",
+  experiments_with_speaker = experiments_with_speaker
+)
+
+# =========================================================
+# OUTPUTS
+# =========================================================
+
+round_df_4(res_aoi_nletters_gamma$comparison_all)
+round_df_4(res_aoi_nletters_gamma$summary_all)
+```
+
+
+Das bild ist zu gemischt, um eine klare Präferenz auszudrücken.
+
+Der Test liefert kein einheitliches Bild. Dass AOI:nLetters nur in etwa der Hälfte der Cluster einen klaren Vorteil zeigt, spricht gegen seine Verwendung als generelle Standardspezifikation. Ein AOI-spezifischer Längeneffekt kann in einzelnen Clustern sinnvoll sein, wenn sich die Längenwirkung tatsächlich zwischen AOIs unterscheidet, er hebt aber zugleich einen Teil des Parsimonie- und Poolingvorteils der Aggregation wieder auf. Wenn die Aggregation vor allem gewählt wurde, um den Längenterm robuster und einfacher zu schätzen, dann ist ein gemeinsamer linearer nLetters-Term insgesamt die zurückhaltendere und besser begründbare Basisspezifikation. AOI:nLetters wäre dann eher als clusterweise Sensitivitätsanalyse oder gezielte Erweiterung für die Cluster zu verstehen, in denen der Vergleich klar dafür spricht.
+
+
+Wir sollten weniger über AIC entscheiden, sondern eher über: Ändert sich der Effekt von nLetters je nach AOI?.
+
+Wann ist die Interaktion plausibel?
+Zum Beispiel wenn:
+- frühe AOIs anders auf Länge reagieren als späte
+- in bestimmten AOIs Länge fast irrelevant ist, in anderen stark
+- residuale Muster ohne Interaktion zeigen, dass der lineare Längeneffekt je AOI unterschiedlich verläuft
+
+
+Wir schauen uns auch noch Topic LOO an um zu schauen ob die Interaktion den Fit Instabil macht und ob accuracy verbessert wird
+```{r}
+library(dplyr)
+library(tidyr)
+library(purrr)
+library(tibble)
+library(glmmTMB)
+
+# =========================================================
+# INPUT
+# =========================================================
+
+dfs <- list(
+  c_bed = c_bed,
+  c_ein = c_ein,
+  n_bed = n_bed,
+  n_ein = n_ein,
+  CS    = CS
+)
+
+experiments_with_speaker <- c("n_bed", "n_ein", "CS")
+
+# =========================================================
+# HELFER
+# =========================================================
+
+safe_plain_df <- function(df) {
+  out <- as.data.frame(df, stringsAsFactors = FALSE)
+  rownames(out) <- NULL
+  out
+}
+
+round_df_4 <- function(df) {
+  df %>%
+    dplyr::mutate(
+      dplyr::across(where(is.numeric), ~ round(.x, 4))
+    )
+}
+
+safe_mean <- function(x) {
+  if (length(x) == 0 || all(is.na(x))) return(NA_real_)
+  mean(x, na.rm = TRUE)
+}
+
+safe_rmse <- function(sq_error) {
+  if (length(sq_error) == 0 || all(is.na(sq_error))) return(NA_real_)
+  sqrt(mean(sq_error, na.rm = TRUE))
+}
+
+collapse_unique <- function(x) {
+  x <- unique(stats::na.omit(x))
+  if (length(x) == 0) return(NA_character_)
+  paste(x, collapse = " | ")
+}
+
+# =========================================================
+# LEERE TABELLEN
+# =========================================================
+
+empty_cv_preds_tbl <- function() {
+  tibble(
+    experiment = character(),
+    heldout_topic = character(),
+    formula_spec = character(),
+    aggr_level = character(),
+    AOI = character(),
+    fit_id = character(),
+    n_train = integer(),
+    n_test = integer(),
+    Participant = character(),
+    Topic = character(),
+    condition = character(),
+    speaker = character(),
+    observed = numeric(),
+    .pred = numeric(),
+    abs_error = numeric(),
+    sq_error = numeric(),
+    split_ok = logical(),
+    split_reason = character(),
+    fit_ok = logical(),
+    fit_error = character(),
+    predict_ok = logical(),
+    predict_error = character(),
+    fit_warning = character(),
+    fit_nonposdef_hessian = logical(),
+    fit_nonzero_convergence = logical()
+  )
+}
+
+empty_fit_level_tbl <- function() {
+  tibble(
+    experiment = character(),
+    heldout_topic = character(),
+    formula_spec = character(),
+    aggr_level = character(),
+    fit_id = character(),
+    n_train = integer(),
+    n_test = integer(),
+    split_ok = logical(),
+    split_reason = character(),
+    fit_ok = logical(),
+    fit_error = character(),
+    predict_ok = logical(),
+    predict_error = character(),
+    fit_warning = character(),
+    fit_nonposdef_hessian = logical(),
+    fit_nonzero_convergence = logical(),
+    n_pred = integer(),
+    rmse = numeric(),
+    mae = numeric()
+  )
+}
+
+empty_aoi_prediction_tbl <- function() {
+  tibble(
+    experiment = character(),
+    heldout_topic = character(),
+    formula_spec = character(),
+    aggr_level = character(),
+    AOI = character(),
+    n_pred = integer(),
+    rmse = numeric(),
+    mae = numeric()
+  )
+}
+
+empty_aoi_comparison_tbl <- function() {
+  tibble(
+    experiment = character(),
+    heldout_topic = character(),
+    aggr_level = character(),
+    AOI = character(),
+    rmse__no_AOI_nLetters_interaction = numeric(),
+    rmse__with_AOI_nLetters_interaction = numeric(),
+    mae__no_AOI_nLetters_interaction = numeric(),
+    mae__with_AOI_nLetters_interaction = numeric(),
+    n_pred__no_AOI_nLetters_interaction = integer(),
+    n_pred__with_AOI_nLetters_interaction = integer(),
+    n_aoi_in_cluster = integer(),
+    comparable = logical(),
+    delta_rmse_with_minus_without = numeric(),
+    delta_mae_with_minus_without = numeric(),
+    winner_rmse = character(),
+    winner_mae = character()
+  )
+}
+
+empty_fit_summary_tbl <- function() {
+  tibble(
+    experiment = character(),
+    formula_spec = character(),
+    n_fits_total = integer(),
+    n_valid_splits = integer(),
+    n_invalid_splits = integer(),
+    n_fit_ok = integer(),
+    n_fit_failed = integer(),
+    n_predict_ok = integer(),
+    n_predict_failed = integer(),
+    n_nonposdef_hessian_fits = integer(),
+    n_nonzero_convergence_fits = integer(),
+    n_warning_fits = integer(),
+    prop_invalid_splits = numeric(),
+    prop_fit_failed = numeric(),
+    prop_predict_failed = numeric(),
+    prop_nonposdef_hessian = numeric(),
+    prop_nonzero_convergence = numeric(),
+    prop_warning = numeric(),
+    rmse_overall = numeric(),
+    mae_overall = numeric()
+  )
+}
+
+# =========================================================
+# DATEN VORBEREITEN
+# nur echte Cluster mit > 1 AOI
+# =========================================================
+
+prep_topic_cv_data <- function(df,
+                               response = "FRT",
+                               use_speaker = FALSE) {
+  needed <- c(response, "nLetters", "Participant", "Topic", "condition", "AOI", "aggr_level")
+  if (use_speaker) needed <- c(needed, "speaker")
+
+  missing_cols <- setdiff(needed, names(df))
+  if (length(missing_cols) > 0) {
+    stop("Fehlende Variablen: ", paste(missing_cols, collapse = ", "))
+  }
+
+  out <- df %>%
+    dplyr::filter(!is.na(.data[[response]])) %>%
+    dplyr::filter(.data[[response]] > 0) %>%
+    dplyr::filter(!is.na(nLetters), is.finite(nLetters), nLetters > 0) %>%
+    dplyr::filter(!is.na(Participant), !is.na(Topic), !is.na(condition), !is.na(AOI), !is.na(aggr_level))
+
+  if (use_speaker) {
+    out <- out %>%
+      dplyr::filter(!is.na(speaker))
+  }
+
+  out <- out %>%
+    dplyr::mutate(
+      Participant = factor(Participant),
+      Topic = factor(Topic),
+      condition = factor(condition),
+      AOI = factor(AOI),
+      aggr_level = factor(aggr_level)
+    )
+
+  if (use_speaker) {
+    out <- out %>%
+      dplyr::mutate(speaker = factor(speaker))
+  }
+
+  cluster_sizes <- out %>%
+    dplyr::distinct(aggr_level, AOI) %>%
+    dplyr::count(aggr_level, name = "n_aoi_in_cluster")
+
+  real_clusters <- cluster_sizes %>%
+    dplyr::filter(n_aoi_in_cluster > 1) %>%
+    dplyr::pull(aggr_level) %>%
+    as.character()
+
+  out <- out %>%
+    dplyr::filter(as.character(aggr_level) %in% real_clusters)
+
+  list(
+    data = safe_plain_df(out),
+    cluster_sizes = cluster_sizes %>%
+      dplyr::filter(as.character(aggr_level) %in% real_clusters)
+  )
+}
+
+# =========================================================
+# FORMELN FÜR AGGREGATED MODELLE
+# =========================================================
+
+make_formula_aggregated_no_aoi_length_interaction <- function(response = "FRT",
+                                                              use_speaker = FALSE) {
+  rhs <- if (use_speaker) {
+    "AOI * condition * speaker + nLetters + (1 | Topic) + (1 | Participant)"
+  } else {
+    "AOI * condition + nLetters + (1 | Topic) + (1 | Participant)"
+  }
+
+  stats::as.formula(paste(response, "~", rhs))
+}
+
+make_formula_aggregated_with_aoi_length_interaction <- function(response = "FRT",
+                                                                use_speaker = FALSE) {
+  rhs <- if (use_speaker) {
+    "AOI * condition * speaker + AOI * nLetters + (1 | Topic) + (1 | Participant)"
+  } else {
+    "AOI * condition + AOI * nLetters + (1 | Topic) + (1 | Participant)"
+  }
+
+  stats::as.formula(paste(response, "~", rhs))
+}
+
+# =========================================================
+# SPLIT CHECK
+# =========================================================
+
+check_split_aggregated <- function(train_df,
+                                   test_df,
+                                   response = "FRT",
+                                   use_speaker = FALSE) {
+  reasons <- character(0)
+
+  if (nrow(train_df) == 0) reasons <- c(reasons, "empty_train")
+  if (nrow(test_df) == 0) reasons <- c(reasons, "empty_test")
+  if (length(reasons) > 0) {
+    return(list(ok = FALSE, reason = paste(reasons, collapse = " | ")))
+  }
+
+  if (dplyr::n_distinct(train_df$AOI) < 2) {
+    reasons <- c(reasons, "aoi_has_less_than_2_levels_in_train")
+  }
+  if (dplyr::n_distinct(train_df$condition) < 2) {
+    reasons <- c(reasons, "condition_has_less_than_2_levels_in_train")
+  }
+  if (use_speaker && dplyr::n_distinct(train_df$speaker) < 2) {
+    reasons <- c(reasons, "speaker_has_less_than_2_levels_in_train")
+  }
+  if (dplyr::n_distinct(train_df$nLetters) < 2) {
+    reasons <- c(reasons, "nLetters_has_less_than_2_values_in_train")
+  }
+
+  train_aoi_levels <- unique(as.character(train_df$AOI))
+  test_aoi_levels  <- unique(as.character(test_df$AOI))
+  if (!all(test_aoi_levels %in% train_aoi_levels)) {
+    reasons <- c(reasons, "test_aoi_level_missing_in_train")
+  }
+
+  train_condition_levels <- unique(as.character(train_df$condition))
+  test_condition_levels  <- unique(as.character(test_df$condition))
+  if (!all(test_condition_levels %in% train_condition_levels)) {
+    reasons <- c(reasons, "test_condition_level_missing_in_train")
+  }
+
+  if (use_speaker) {
+    train_speaker_levels <- unique(as.character(train_df$speaker))
+    test_speaker_levels  <- unique(as.character(test_df$speaker))
+    if (!all(test_speaker_levels %in% train_speaker_levels)) {
+      reasons <- c(reasons, "test_speaker_level_missing_in_train")
+    }
+  }
+
+  if (any(!is.finite(train_df[[response]])) || any(train_df[[response]] <= 0, na.rm = TRUE)) {
+    reasons <- c(reasons, "invalid_response_in_train")
+  }
+  if (any(!is.finite(test_df[[response]])) || any(test_df[[response]] <= 0, na.rm = TRUE)) {
+    reasons <- c(reasons, "invalid_response_in_test")
+  }
+
+  list(
+    ok = length(reasons) == 0,
+    reason = if (length(reasons) == 0) NA_character_ else paste(reasons, collapse = " | ")
+  )
+}
+
+# =========================================================
+# FIT + PREDICT GAMMA
+# =========================================================
+
+fit_predict_gamma <- function(train_df,
+                              test_df,
+                              formula_full,
+                              response = "FRT",
+                              use_speaker = FALSE,
+                              pred_re_form = NULL) {
+  split_check <- check_split_aggregated(
+    train_df = train_df,
+    test_df = test_df,
+    response = response,
+    use_speaker = use_speaker
+  )
+
+  if (!split_check$ok) {
+    return(list(
+      pred = rep(NA_real_, nrow(test_df)),
+      split_ok = FALSE,
+      split_reason = split_check$reason,
+      fit_ok = FALSE,
+      fit_error = "invalid_split",
+      predict_ok = FALSE,
+      predict_error = "no_prediction_because_invalid_split",
+      fit_warning = NA_character_,
+      fit_nonposdef_hessian = NA,
+      fit_nonzero_convergence = NA
+    ))
+  }
+
+  train_df_fit <- droplevels(train_df)
+  test_df_pred <- droplevels(test_df)
+
+  warns <- character(0)
+  msgs <- character(0)
+
+  fit <- withCallingHandlers(
+    tryCatch(
+      glmmTMB::glmmTMB(
+        formula = formula_full,
+        data = train_df_fit,
+        family = Gamma(link = "log")
+      ),
+      error = function(e) e
+    ),
+    warning = function(w) {
+      warns <<- c(warns, conditionMessage(w))
+      invokeRestart("muffleWarning")
+    },
+    message = function(m) {
+      msgs <<- c(msgs, conditionMessage(m))
+      invokeRestart("muffleMessage")
+    }
+  )
+
+  if (inherits(fit, "error")) {
+    return(list(
+      pred = rep(NA_real_, nrow(test_df_pred)),
+      split_ok = TRUE,
+      split_reason = NA_character_,
+      fit_ok = FALSE,
+      fit_error = conditionMessage(fit),
+      predict_ok = FALSE,
+      predict_error = "no_prediction_because_fit_failed",
+      fit_warning = collapse_unique(c(warns, msgs)),
+      fit_nonposdef_hessian = NA,
+      fit_nonzero_convergence = NA
+    ))
+  }
+
+  fit_nonposdef_hessian <- tryCatch(
+    !isTRUE(fit$sdr$pdHess),
+    error = function(e) NA
+  )
+
+  fit_nonzero_convergence <- tryCatch(
+    {
+      conv <- fit$fit$convergence
+      if (is.null(conv)) NA else conv != 0
+    },
+    error = function(e) NA
+  )
+
+  pred_obj <- tryCatch(
+    predict(
+      fit,
+      newdata = test_df_pred,
+      type = "response",
+      re.form = pred_re_form,
+      allow.new.levels = TRUE
+    ),
+    error = function(e) e
+  )
+
+  if (inherits(pred_obj, "error")) {
+    return(list(
+      pred = rep(NA_real_, nrow(test_df_pred)),
+      split_ok = TRUE,
+      split_reason = NA_character_,
+      fit_ok = TRUE,
+      fit_error = NA_character_,
+      predict_ok = FALSE,
+      predict_error = conditionMessage(pred_obj),
+      fit_warning = collapse_unique(c(warns, msgs)),
+      fit_nonposdef_hessian = fit_nonposdef_hessian,
+      fit_nonzero_convergence = fit_nonzero_convergence
+    ))
+  }
+
+  list(
+    pred = as.numeric(pred_obj),
+    split_ok = TRUE,
+    split_reason = NA_character_,
+    fit_ok = TRUE,
+    fit_error = NA_character_,
+    predict_ok = TRUE,
+    predict_error = NA_character_,
+    fit_warning = collapse_unique(c(warns, msgs)),
+    fit_nonposdef_hessian = fit_nonposdef_hessian,
+    fit_nonzero_convergence = fit_nonzero_convergence
+  )
+}
+
+# =========================================================
+# EIN EXPERIMENT
+# clusterweise aggregated fits, Topic-LOO
+# =========================================================
+
+run_topic_loo_compare_one_experiment_aggregated <- function(df,
+                                                            exp_name,
+                                                            response = "FRT",
+                                                            use_speaker = FALSE,
+                                                            pred_re_form = NULL) {
+  prep <- prep_topic_cv_data(
+    df = df,
+    response = response,
+    use_speaker = use_speaker
+  )
+
+  dat <- prep$data
+  cluster_sizes <- prep$cluster_sizes
+
+  if (nrow(dat) == 0) {
+    return(list(
+      cv_preds = empty_cv_preds_tbl(),
+      fit_level = empty_fit_level_tbl(),
+      aoi_prediction = empty_aoi_prediction_tbl(),
+      aoi_comparison = empty_aoi_comparison_tbl(),
+      fit_summary = empty_fit_summary_tbl()
+    ))
+  }
+
+  groups <- unique(as.character(dat$aggr_level))
+
+  cv_preds <- purrr::map_dfr(groups, function(group_i) {
+    dat_group <- dat %>%
+      dplyr::filter(as.character(aggr_level) == group_i)
+
+    topics_group <- unique(as.character(dat_group$Topic))
+
+    purrr::map_dfr(topics_group, function(topic_i) {
+      train_df <- dat_group %>%
+        dplyr::filter(as.character(Topic) != topic_i)
+
+      test_df <- dat_group %>%
+        dplyr::filter(as.character(Topic) == topic_i)
+
+      fit_no_inter <- fit_predict_gamma(
+        train_df = train_df,
+        test_df = test_df,
+        formula_full = make_formula_aggregated_no_aoi_length_interaction(
+          response = response,
+          use_speaker = use_speaker
+        ),
+        response = response,
+        use_speaker = use_speaker,
+        pred_re_form = pred_re_form
+      )
+
+      fit_with_inter <- fit_predict_gamma(
+        train_df = train_df,
+        test_df = test_df,
+        formula_full = make_formula_aggregated_with_aoi_length_interaction(
+          response = response,
+          use_speaker = use_speaker
+        ),
+        response = response,
+        use_speaker = use_speaker,
+        pred_re_form = pred_re_form
+      )
+
+      dplyr::bind_rows(
+        tibble(
+          experiment = exp_name,
+          heldout_topic = topic_i,
+          formula_spec = "no_AOI_nLetters_interaction",
+          aggr_level = group_i,
+          AOI = as.character(test_df$AOI),
+          fit_id = paste(exp_name, group_i, topic_i, "no_AOI_nLetters_interaction", sep = "__"),
+          n_train = nrow(train_df),
+          n_test = nrow(test_df),
+          Participant = as.character(test_df$Participant),
+          Topic = as.character(test_df$Topic),
+          condition = as.character(test_df$condition),
+          speaker = if (use_speaker) as.character(test_df$speaker) else NA_character_,
+          observed = test_df[[response]],
+          .pred = fit_no_inter$pred,
+          abs_error = abs(test_df[[response]] - fit_no_inter$pred),
+          sq_error = (test_df[[response]] - fit_no_inter$pred)^2,
+          split_ok = fit_no_inter$split_ok,
+          split_reason = fit_no_inter$split_reason,
+          fit_ok = fit_no_inter$fit_ok,
+          fit_error = fit_no_inter$fit_error,
+          predict_ok = fit_no_inter$predict_ok,
+          predict_error = fit_no_inter$predict_error,
+          fit_warning = fit_no_inter$fit_warning,
+          fit_nonposdef_hessian = fit_no_inter$fit_nonposdef_hessian,
+          fit_nonzero_convergence = fit_no_inter$fit_nonzero_convergence
+        ),
+        tibble(
+          experiment = exp_name,
+          heldout_topic = topic_i,
+          formula_spec = "with_AOI_nLetters_interaction",
+          aggr_level = group_i,
+          AOI = as.character(test_df$AOI),
+          fit_id = paste(exp_name, group_i, topic_i, "with_AOI_nLetters_interaction", sep = "__"),
+          n_train = nrow(train_df),
+          n_test = nrow(test_df),
+          Participant = as.character(test_df$Participant),
+          Topic = as.character(test_df$Topic),
+          condition = as.character(test_df$condition),
+          speaker = if (use_speaker) as.character(test_df$speaker) else NA_character_,
+          observed = test_df[[response]],
+          .pred = fit_with_inter$pred,
+          abs_error = abs(test_df[[response]] - fit_with_inter$pred),
+          sq_error = (test_df[[response]] - fit_with_inter$pred)^2,
+          split_ok = fit_with_inter$split_ok,
+          split_reason = fit_with_inter$split_reason,
+          fit_ok = fit_with_inter$fit_ok,
+          fit_error = fit_with_inter$fit_error,
+          predict_ok = fit_with_inter$predict_ok,
+          predict_error = fit_with_inter$predict_error,
+          fit_warning = fit_with_inter$fit_warning,
+          fit_nonposdef_hessian = fit_with_inter$fit_nonposdef_hessian,
+          fit_nonzero_convergence = fit_with_inter$fit_nonzero_convergence
+        )
+      )
+    })
+  })
+
+  fit_level <- cv_preds %>%
+    dplyr::group_by(experiment, heldout_topic, formula_spec, aggr_level, fit_id) %>%
+    dplyr::summarise(
+      n_train = dplyr::first(n_train),
+      n_test = dplyr::first(n_test),
+      split_ok = dplyr::first(split_ok),
+      split_reason = dplyr::first(split_reason),
+      fit_ok = dplyr::first(fit_ok),
+      fit_error = dplyr::first(fit_error),
+      predict_ok = dplyr::first(predict_ok),
+      predict_error = dplyr::first(predict_error),
+      fit_warning = dplyr::first(fit_warning),
+      fit_nonposdef_hessian = dplyr::first(fit_nonposdef_hessian),
+      fit_nonzero_convergence = dplyr::first(fit_nonzero_convergence),
+      n_pred = sum(!is.na(.pred)),
+      rmse = safe_rmse(sq_error),
+      mae = safe_mean(abs_error),
+      .groups = "drop"
+    )
+
+  aoi_prediction <- cv_preds %>%
+    dplyr::group_by(experiment, heldout_topic, formula_spec, aggr_level, AOI) %>%
+    dplyr::summarise(
+      n_pred = sum(!is.na(.pred)),
+      rmse = safe_rmse(sq_error),
+      mae = safe_mean(abs_error),
+      .groups = "drop"
+    )
+
+  aoi_comparison <- aoi_prediction %>%
+    dplyr::select(experiment, heldout_topic, formula_spec, aggr_level, AOI, n_pred, rmse, mae) %>%
+    tidyr::pivot_wider(
+      names_from = formula_spec,
+      values_from = c(n_pred, rmse, mae),
+      names_sep = "__"
+    ) %>%
+    dplyr::left_join(cluster_sizes, by = "aggr_level") %>%
+    dplyr::mutate(
+      comparable =
+        !is.na(rmse__no_AOI_nLetters_interaction) &
+        !is.na(rmse__with_AOI_nLetters_interaction) &
+        !is.na(mae__no_AOI_nLetters_interaction) &
+        !is.na(mae__with_AOI_nLetters_interaction) &
+        !is.na(n_pred__no_AOI_nLetters_interaction) &
+        !is.na(n_pred__with_AOI_nLetters_interaction) &
+        n_pred__no_AOI_nLetters_interaction > 0 &
+        n_pred__with_AOI_nLetters_interaction > 0,
+
+      delta_rmse_with_minus_without =
+        rmse__with_AOI_nLetters_interaction - rmse__no_AOI_nLetters_interaction,
+
+      delta_mae_with_minus_without =
+        mae__with_AOI_nLetters_interaction - mae__no_AOI_nLetters_interaction,
+
+      winner_rmse = dplyr::case_when(
+        !comparable ~ NA_character_,
+        rmse__with_AOI_nLetters_interaction < rmse__no_AOI_nLetters_interaction ~ "with_AOI_nLetters_interaction",
+        rmse__with_AOI_nLetters_interaction > rmse__no_AOI_nLetters_interaction ~ "no_AOI_nLetters_interaction",
+        TRUE ~ "equal"
+      ),
+
+      winner_mae = dplyr::case_when(
+        !comparable ~ NA_character_,
+        mae__with_AOI_nLetters_interaction < mae__no_AOI_nLetters_interaction ~ "with_AOI_nLetters_interaction",
+        mae__with_AOI_nLetters_interaction > mae__no_AOI_nLetters_interaction ~ "no_AOI_nLetters_interaction",
+        TRUE ~ "equal"
+      )
+    )
+
+  fit_summary <- fit_level %>%
+    dplyr::group_by(experiment, formula_spec) %>%
+    dplyr::summarise(
+      n_fits_total = dplyr::n(),
+      n_valid_splits = sum(split_ok %in% TRUE, na.rm = TRUE),
+      n_invalid_splits = sum(split_ok %in% FALSE, na.rm = TRUE),
+      n_fit_ok = sum(fit_ok %in% TRUE, na.rm = TRUE),
+      n_fit_failed = sum(split_ok %in% TRUE & fit_ok %in% FALSE, na.rm = TRUE),
+      n_predict_ok = sum(predict_ok %in% TRUE, na.rm = TRUE),
+      n_predict_failed = sum(split_ok %in% TRUE & fit_ok %in% TRUE & predict_ok %in% FALSE, na.rm = TRUE),
+      n_nonposdef_hessian_fits = sum(fit_nonposdef_hessian %in% TRUE, na.rm = TRUE),
+      n_nonzero_convergence_fits = sum(fit_nonzero_convergence %in% TRUE, na.rm = TRUE),
+      n_warning_fits = sum(!is.na(fit_warning), na.rm = TRUE),
+      prop_invalid_splits = n_invalid_splits / n_fits_total,
+      prop_fit_failed = n_fit_failed / n_fits_total,
+      prop_predict_failed = n_predict_failed / n_fits_total,
+      prop_nonposdef_hessian = n_nonposdef_hessian_fits / n_fits_total,
+      prop_nonzero_convergence = n_nonzero_convergence_fits / n_fits_total,
+      prop_warning = n_warning_fits / n_fits_total,
+      rmse_overall = safe_rmse(cv_preds$sq_error[
+        cv_preds$experiment == dplyr::first(experiment) &
+          cv_preds$formula_spec == dplyr::first(formula_spec)
+      ]),
+      mae_overall = safe_mean(cv_preds$abs_error[
+        cv_preds$experiment == dplyr::first(experiment) &
+          cv_preds$formula_spec == dplyr::first(formula_spec)
+      ]),
+      .groups = "drop"
+    )
+
+  list(
+    cv_preds = cv_preds,
+    fit_level = fit_level,
+    aoi_prediction = aoi_prediction,
+    aoi_comparison = aoi_comparison,
+    fit_summary = fit_summary
+  )
+}
+
+# =========================================================
+# ÜBER ALLE EXPERIMENTE
+# =========================================================
+
+run_topic_loo_compare_all_aggregated <- function(dfs,
+                                                 response = "FRT",
+                                                 experiments_with_speaker = c("n_bed", "n_ein", "CS"),
+                                                 pred_re_form = NULL) {
+  nested <- purrr::imap(dfs, function(df, exp_name) {
+    run_topic_loo_compare_one_experiment_aggregated(
+      df = df,
+      exp_name = exp_name,
+      response = response,
+      use_speaker = exp_name %in% experiments_with_speaker,
+      pred_re_form = pred_re_form
+    )
+  })
+
+  fit_level_all <- dplyr::bind_rows(purrr::map(nested, "fit_level"))
+  aoi_prediction_all <- dplyr::bind_rows(purrr::map(nested, "aoi_prediction"))
+  aoi_comparison_all <- dplyr::bind_rows(purrr::map(nested, "aoi_comparison"))
+  fit_summary_all <- dplyr::bind_rows(purrr::map(nested, "fit_summary"))
+  cv_preds_all <- dplyr::bind_rows(purrr::map(nested, "cv_preds"))
+
+  fit_comparison_all <- fit_summary_all %>%
+    dplyr::select(
+      experiment, formula_spec,
+      n_fits_total, n_fit_failed, n_predict_failed,
+      n_nonposdef_hessian_fits, n_nonzero_convergence_fits, n_warning_fits,
+      prop_fit_failed, prop_predict_failed,
+      prop_nonposdef_hessian, prop_nonzero_convergence, prop_warning,
+      rmse_overall, mae_overall
+    ) %>%
+    tidyr::pivot_wider(
+      names_from = formula_spec,
+      values_from = -experiment,
+      names_sep = "__"
+    ) %>%
+    dplyr::mutate(
+      diff_prop_fit_failed_with_minus_without =
+        prop_fit_failed__with_AOI_nLetters_interaction -
+        prop_fit_failed__no_AOI_nLetters_interaction,
+
+      diff_prop_predict_failed_with_minus_without =
+        prop_predict_failed__with_AOI_nLetters_interaction -
+        prop_predict_failed__no_AOI_nLetters_interaction,
+
+      diff_prop_nonposdef_hessian_with_minus_without =
+        prop_nonposdef_hessian__with_AOI_nLetters_interaction -
+        prop_nonposdef_hessian__no_AOI_nLetters_interaction,
+
+      diff_prop_nonzero_convergence_with_minus_without =
+        prop_nonzero_convergence__with_AOI_nLetters_interaction -
+        prop_nonzero_convergence__no_AOI_nLetters_interaction,
+
+      diff_prop_warning_with_minus_without =
+        prop_warning__with_AOI_nLetters_interaction -
+        prop_warning__no_AOI_nLetters_interaction,
+
+      delta_rmse_overall_with_minus_without =
+        rmse_overall__with_AOI_nLetters_interaction -
+        rmse_overall__no_AOI_nLetters_interaction,
+
+      delta_mae_overall_with_minus_without =
+        mae_overall__with_AOI_nLetters_interaction -
+        mae_overall__no_AOI_nLetters_interaction
+    )
+
+  aoi_mean_comparison_all <- aoi_prediction_all %>%
+    dplyr::group_by(experiment, aggr_level, AOI, formula_spec) %>%
+    dplyr::summarise(
+      n_topics = dplyr::n(),
+      mean_rmse = safe_mean(rmse),
+      median_rmse = median(rmse, na.rm = TRUE),
+      mean_mae = safe_mean(mae),
+      median_mae = median(mae, na.rm = TRUE),
+      .groups = "drop"
+    ) %>%
+    tidyr::pivot_wider(
+      names_from = formula_spec,
+      values_from = c(n_topics, mean_rmse, median_rmse, mean_mae, median_mae),
+      names_sep = "__"
+    ) %>%
+    dplyr::mutate(
+      comparable =
+        !is.na(mean_rmse__no_AOI_nLetters_interaction) &
+        !is.na(mean_rmse__with_AOI_nLetters_interaction),
+
+      winner_mean_rmse = dplyr::case_when(
+        !comparable ~ NA_character_,
+        mean_rmse__with_AOI_nLetters_interaction < mean_rmse__no_AOI_nLetters_interaction ~ "with_AOI_nLetters_interaction",
+        mean_rmse__with_AOI_nLetters_interaction > mean_rmse__no_AOI_nLetters_interaction ~ "no_AOI_nLetters_interaction",
+        TRUE ~ "equal"
+      ),
+
+      winner_mean_mae = dplyr::case_when(
+        !comparable ~ NA_character_,
+        mean_mae__with_AOI_nLetters_interaction < mean_mae__no_AOI_nLetters_interaction ~ "with_AOI_nLetters_interaction",
+        mean_mae__with_AOI_nLetters_interaction > mean_mae__no_AOI_nLetters_interaction ~ "no_AOI_nLetters_interaction",
+        TRUE ~ "equal"
+      ),
+
+      delta_mean_rmse_with_minus_without =
+        mean_rmse__with_AOI_nLetters_interaction - mean_rmse__no_AOI_nLetters_interaction,
+
+      delta_mean_mae_with_minus_without =
+        mean_mae__with_AOI_nLetters_interaction - mean_mae__no_AOI_nLetters_interaction
+    )
+
+  aoi_winner_counts_all <- aoi_mean_comparison_all %>%
+    dplyr::select(experiment, winner_mean_rmse, winner_mean_mae) %>%
+    tidyr::pivot_longer(
+      cols = c(winner_mean_rmse, winner_mean_mae),
+      names_to = "metric",
+      values_to = "winner"
+    ) %>%
+    dplyr::filter(!is.na(winner)) %>%
+    dplyr::count(experiment, metric, winner, name = "n_aoi")
+
+  list(
+    nested = nested,
+    cv_preds_all = cv_preds_all,
+    fit_level_all = fit_level_all,
+    aoi_prediction_all = aoi_prediction_all,
+    aoi_comparison_all = aoi_comparison_all,
+    fit_summary_all = fit_summary_all,
+    fit_comparison_all = fit_comparison_all,
+    aoi_mean_comparison_all = aoi_mean_comparison_all,
+    aoi_winner_counts_all = aoi_winner_counts_all
+  )
+}
+
+# =========================================================
+# AUSFÜHREN
+# =========================================================
+
+res_gamma_aoi_length_interaction_aggregated <- run_topic_loo_compare_all_aggregated(
+  dfs = dfs,
+  response = "FRT",
+  experiments_with_speaker = experiments_with_speaker,
+  pred_re_form = NULL
+)
+
+# =========================================================
+# OUTPUTS
+# =========================================================
+
+# AOI x Topic direkter Vergleich im aggregated Modell
+#round_df_4(res_gamma_aoi_length_interaction_aggregated$aoi_comparison_all)
+
+# AOI x Topic RMSE / MAE je Spezifikation
+#round_df_4(res_gamma_aoi_length_interaction_aggregated$aoi_prediction_all)
+
+# Fitprobleme und Gesamtgüte
+#round_df_4(res_gamma_aoi_length_interaction_aggregated$fit_summary_all)
+
+# Direkter Vergleich mit vs ohne AOI:nLetters
+#round_df_4(res_gamma_aoi_length_interaction_aggregated$fit_comparison_all)
+
+# AOI-weise Mittelwerte über Topics
+round_df_4(res_gamma_aoi_length_interaction_aggregated$aoi_mean_comparison_all)
+
+# Winner counts
+round_df_4(res_gamma_aoi_length_interaction_aggregated$aoi_winner_counts_all)
+
+# Detail pro Fit
+#round_df_4(res_gamma_aoi_length_interaction_aggregated$fit_level_all)
+```
+Methodisch wurde geprüft, wie gut die Modelle auf neue Topics innerhalb eines bereits definierten AOI-Clusters generalisieren. Dafür wurde jeweils ein Topic vollständig aus dem Training entfernt, das Modell auf den verbleibenden Topics des Clusters geschätzt und anschließend für das ausgelassene Topic vorhergesagt. Die Vorhersage wurde dann AOI-spezifisch ausgewertet. Der zentrale Vergleich war also nicht, wie gut ein Modell die Trainingsdaten beschreibt, sondern ob ein zusätzlicher AOI-spezifischer Längeneffekt die Vorhersage für unbeobachtete Items innerhalb derselben Clusterstruktur verbessert.
+
+Die Vorhersagemuster sprechen insgesamt gegen einen allgemeinen Nutzen dieses zusätzlichen AOI-spezifischen Längeneffekts. In den meisten AOIs verschlechtert er die Generalisierung auf neue Topics oder bringt höchstens minimale Änderungen. Nur in einzelnen AOIs gibt es lokale Verbesserungen, die aber kein konsistentes Muster über Experimente und Cluster hinweg ergeben. Das deutet darauf hin, dass der zusätzliche Freiheitsgrad meist eher cluster- oder item-spezifische Besonderheiten aufgreift, statt eine robuste, auf neue Topics übertragbare Struktur zu lernen. Entsprechend reicht für die Hauptanalyse ein einfacherer globaler Längeneffekt aus; AOI-spezifische Längeneffekte wären eher etwas für gezielte Nachanalysen einzelner auffälliger Cluster.
+
+
+Wir überprüfen die Anwendung von Splines zuerst mit penalized Splines
+```{r}
+library(dplyr)
+library(purrr)
+library(tidyr)
+library(tibble)
+library(mgcv)
+
+# =========================================================
+# INPUT
+# Erwartet vorhandene Datensätze:
+# c_bed, c_ein, n_bed, n_ein, CS
+# =========================================================
+
+dfs <- list(
+  c_bed = c_bed,
+  c_ein = c_ein,
+  n_bed = n_bed,
+  n_ein = n_ein,
+  CS    = CS
+)
+
+experiments_with_speaker <- c("n_bed", "n_ein", "CS")
+
+# =========================================================
+# HELFER
+# =========================================================
+
+round_df_4 <- function(df) {
+  df %>%
+    mutate(across(where(is.numeric), ~ round(.x, 4)))
+}
+
+safe_plain_df <- function(df) {
+  out <- as.data.frame(df, stringsAsFactors = FALSE)
+  rownames(out) <- NULL
+  out
+}
+
+collapse_unique <- function(x) {
+  x <- unique(stats::na.omit(x))
+  if (length(x) == 0) return(NA_character_)
+  paste(x, collapse = " | ")
+}
+
+# =========================================================
+# DATEN VORBEREITEN
+# =========================================================
+
+prep_cluster_data_pspline <- function(df,
+                                      aggr_value,
+                                      response = "FRT",
+                                      use_speaker = FALSE) {
+  needed <- c(response, "nLetters", "Participant", "Topic", "condition", "AOI", "aggr_level")
+  if (use_speaker) needed <- c(needed, "speaker")
+
+  missing_cols <- setdiff(needed, names(df))
+  if (length(missing_cols) > 0) {
+    stop(
+      "Fehlende Variablen: ",
+      paste(missing_cols, collapse = ", ")
+    )
+  }
+
+  out <- df %>%
+    filter(as.character(aggr_level) == as.character(aggr_value)) %>%
+    filter(!is.na(.data[[response]])) %>%
+    filter(.data[[response]] > 0) %>%
+    filter(!is.na(nLetters)) %>%
+    filter(!is.na(Participant), !is.na(Topic), !is.na(condition), !is.na(AOI), !is.na(aggr_level)) %>%
+    mutate(
+      Participant = factor(Participant),
+      Topic = factor(Topic),
+      condition = factor(condition),
+      AOI = factor(AOI),
+      aggr_level = factor(aggr_level)
+    ) %>%
+    droplevels()
+
+  if (use_speaker) {
+    out <- out %>%
+      filter(!is.na(speaker)) %>%
+      mutate(speaker = factor(speaker))
+  }
+
+  safe_plain_df(out)
+}
+
+# =========================================================
+# FORMELN
+# Kein AOI-spezifischer Spline, nur gemeinsamer s(nLetters)
+# =========================================================
+
+make_pspline_formula <- function(data,
+                                 response = "FRT",
+                                 use_speaker = FALSE,
+                                 k_spline = 5) {
+  n_aoi <- nlevels(droplevels(data$AOI))
+  n_unique_len <- dplyr::n_distinct(data$nLetters)
+
+  if (n_unique_len < 4) {
+    return(NULL)
+  }
+
+  k_eff <- min(k_spline, n_unique_len - 1)
+  k_eff <- max(k_eff, 4)
+
+  param_part <- if (n_aoi > 1) {
+    if (use_speaker) {
+      "AOI * speaker * condition"
+    } else {
+      "AOI * condition"
+    }
+  } else {
+    if (use_speaker) {
+      "speaker * condition"
+    } else {
+      "condition"
+    }
+  }
+
+  smooth_part <- paste0("s(nLetters, bs='ps', k=", k_eff, ")")
+  re_part <- "s(Participant, bs='re') + s(Topic, bs='re')"
+
+  as.formula(
+    paste(response, "~", param_part, "+", smooth_part, "+", re_part)
+  )
+}
+
+# =========================================================
+# FIT
+# =========================================================
+
+fit_pspline_gamma_capture <- function(data,
+                                      formula,
+                                      re_edf_tol = 1e-4) {
+  warns <- character(0)
+
+  fit <- withCallingHandlers(
+    tryCatch(
+      mgcv::gam(
+        formula = formula,
+        data = data,
+        family = Gamma(link = "log"),
+        method = "REML",
+        select = TRUE
+      ),
+      error = function(e) e
+    ),
+    warning = function(w) {
+      warns <<- c(warns, conditionMessage(w))
+      invokeRestart("muffleWarning")
+    }
+  )
+
+  if (inherits(fit, "error")) {
+    return(list(
+      fit_ok = FALSE,
+      fit = NULL,
+      fit_error = conditionMessage(fit),
+      fit_warning = collapse_unique(warns),
+      rank_deficient = NA,
+      re_participant_zero = NA,
+      re_topic_zero = NA,
+      re_zero_any = NA,
+      spline_edf = NA_real_,
+      aic = NA_real_
+    ))
+  }
+
+  s_tab <- tryCatch(
+    as.data.frame(summary(fit)$s.table),
+    error = function(e) NULL
+  )
+
+  if (is.null(s_tab) || nrow(s_tab) == 0) {
+    s_tab <- data.frame(edf = numeric(0))
+    rownames(s_tab) <- character(0)
+  }
+
+  s_tab$smooth_label <- rownames(s_tab)
+
+  part_edf <- s_tab %>%
+    filter(grepl("^s\\(Participant\\)", smooth_label)) %>%
+    summarise(edf = sum(edf, na.rm = TRUE)) %>%
+    pull(edf)
+
+  topic_edf <- s_tab %>%
+    filter(grepl("^s\\(Topic\\)", smooth_label)) %>%
+    summarise(edf = sum(edf, na.rm = TRUE)) %>%
+    pull(edf)
+
+  spline_edf <- s_tab %>%
+    filter(grepl("^s\\(nLetters\\)", smooth_label)) %>%
+    summarise(edf = sum(edf, na.rm = TRUE)) %>%
+    pull(edf)
+
+  part_edf <- if (length(part_edf) == 0) NA_real_ else part_edf
+  topic_edf <- if (length(topic_edf) == 0) NA_real_ else topic_edf
+  spline_edf <- if (length(spline_edf) == 0) NA_real_ else spline_edf
+
+  re_participant_zero <- !is.na(part_edf) && part_edf < re_edf_tol
+  re_topic_zero <- !is.na(topic_edf) && topic_edf < re_edf_tol
+
+  rank_deficient <- FALSE
+  if (!is.null(fit$rank) && !is.null(coef(fit))) {
+    rank_deficient <- fit$rank < length(coef(fit))
+  }
+
+  list(
+    fit_ok = TRUE,
+    fit = fit,
+    fit_error = NA_character_,
+    fit_warning = collapse_unique(warns),
+    rank_deficient = rank_deficient,
+    re_participant_zero = re_participant_zero,
+    re_topic_zero = re_topic_zero,
+    re_zero_any = re_participant_zero | re_topic_zero,
+    spline_edf = spline_edf,
+    aic = AIC(fit)
+  )
+}
+
+# =========================================================
+# EIN CLUSTER
+# =========================================================
+
+run_one_cluster_pspline <- function(df,
+                                    exp_name,
+                                    aggr_value,
+                                    response = "FRT",
+                                    use_speaker = FALSE,
+                                    k_spline = 5,
+                                    re_edf_tol = 1e-4) {
+  dat <- prep_cluster_data_pspline(
+    df = df,
+    aggr_value = aggr_value,
+    response = response,
+    use_speaker = use_speaker
+  )
+
+  n_aoi <- nlevels(droplevels(dat$AOI))
+  n_uniqueLetters <- dplyr::n_distinct(dat$nLetters)
+
+  base_info <- tibble(
+    exp = exp_name,
+    aggr_level = as.character(aggr_value),
+    n_obs = nrow(dat),
+    n_aoi_in_cluster = n_aoi,
+    n_uniqueLetters = n_uniqueLetters,
+    use_speaker = use_speaker
+  )
+
+  if (nrow(dat) == 0) {
+    return(
+      base_info %>%
+        mutate(
+          fit_ok = FALSE,
+          fit_failed = TRUE,
+          rank_deficient = NA,
+          re_participant_zero = NA,
+          re_topic_zero = NA,
+          re_zero_any = NA,
+          has_warning = TRUE,
+          fail_reason = "empty_cluster_after_filtering",
+          warning_msg = "empty_cluster_after_filtering",
+          spline_edf = NA_real_,
+          aic = NA_real_
+        ) %>%
+        round_df_4()
+    )
+  }
+
+  fml <- make_pspline_formula(
+    data = dat,
+    response = response,
+    use_speaker = use_speaker,
+    k_spline = k_spline
+  )
+
+  if (is.null(fml)) {
+    return(
+      base_info %>%
+        mutate(
+          fit_ok = FALSE,
+          fit_failed = TRUE,
+          rank_deficient = NA,
+          re_participant_zero = NA,
+          re_topic_zero = NA,
+          re_zero_any = NA,
+          has_warning = TRUE,
+          fail_reason = "too_few_unique_nLetters_values",
+          warning_msg = "too_few_unique_nLetters_values",
+          spline_edf = NA_real_,
+          aic = NA_real_
+        ) %>%
+        round_df_4()
+    )
+  }
+
+  fit_out <- fit_pspline_gamma_capture(
+    data = dat,
+    formula = fml,
+    re_edf_tol = re_edf_tol
+  )
+
+  base_info %>%
+    mutate(
+      fit_ok = fit_out$fit_ok,
+      fit_failed = !fit_out$fit_ok,
+      rank_deficient = fit_out$rank_deficient,
+      re_participant_zero = fit_out$re_participant_zero,
+      re_topic_zero = fit_out$re_topic_zero,
+      re_zero_any = fit_out$re_zero_any,
+      has_warning = !is.na(fit_out$fit_warning),
+      fail_reason = fit_out$fit_error,
+      warning_msg = fit_out$fit_warning,
+      spline_edf = fit_out$spline_edf,
+      aic = fit_out$aic
+    ) %>%
+    round_df_4()
+}
+
+# =========================================================
+# ALLE CLUSTER EINES EXPERIMENTS
+# =========================================================
+
+run_one_experiment_pspline <- function(df,
+                                       exp_name,
+                                       response = "FRT",
+                                       use_speaker = FALSE,
+                                       k_spline = 5,
+                                       re_edf_tol = 1e-4) {
+  aggr_vals <- unique(as.character(df$aggr_level))
+
+  cluster_results <- purrr::map_dfr(aggr_vals, function(ag) {
+    run_one_cluster_pspline(
+      df = df,
+      exp_name = exp_name,
+      aggr_value = ag,
+      response = response,
+      use_speaker = use_speaker,
+      k_spline = k_spline,
+      re_edf_tol = re_edf_tol
+    )
+  }) %>%
+    arrange(aggr_level) %>%
+    select(
+      exp,
+      aggr_level,
+      n_uniqueLetters,
+      spline_edf
+    ) %>%
+    round_df_4()
+
+  summary_results <- cluster_results %>%
+    summarise(
+      exp = exp_name,
+      n_clusters = dplyr::n(),
+      mean_spline_edf = mean(spline_edf, na.rm = TRUE),
+      median_spline_edf = median(spline_edf, na.rm = TRUE)
+    ) %>%
+    round_df_4()
+
+  list(
+    cluster_results = cluster_results,
+    summary_results = summary_results
+  )
+}
+
+# =========================================================
+# ÜBER ALLE EXPERIMENTE
+# =========================================================
+
+run_cluster_psplines_all <- function(dfs,
+                                     response = "FRT",
+                                     experiments_with_speaker = c("n_bed", "n_ein", "CS"),
+                                     k_spline = 5,
+                                     re_edf_tol = 1e-4) {
+  nested <- purrr::imap(dfs, function(df, exp_name) {
+    run_one_experiment_pspline(
+      df = df,
+      exp_name = exp_name,
+      response = response,
+      use_speaker = exp_name %in% experiments_with_speaker,
+      k_spline = k_spline,
+      re_edf_tol = re_edf_tol
+    )
+  })
+
+  cluster_results_all <- bind_rows(purrr::map(nested, "cluster_results")) %>%
+    arrange(exp, aggr_level) %>%
+    select(
+      exp,
+      aggr_level,
+      n_uniqueLetters,
+      spline_edf
+    ) %>%
+    round_df_4()
+
+  summary_results_all <- bind_rows(purrr::map(nested, "summary_results")) %>%
+    select(
+      exp,
+      n_clusters,
+      mean_spline_edf,
+      median_spline_edf
+    ) %>%
+    round_df_4()
+
+  overall <- cluster_results_all %>%
+    summarise(
+      n_clusters = dplyr::n(),
+      mean_spline_edf = mean(spline_edf, na.rm = TRUE),
+      median_spline_edf = median(spline_edf, na.rm = TRUE)
+    ) %>%
+    round_df_4()
+
+  list(
+    nested = nested,
+    cluster_results_all = cluster_results_all,
+    summary_results_all = summary_results_all,
+    overall = overall
+  )
+}
+
+# =========================================================
+# RECHNEN
+# =========================================================
+
+res_cluster_pspline_gamma <- run_cluster_psplines_all(
+  dfs = dfs,
+  response = "FRT",
+  experiments_with_speaker = experiments_with_speaker,
+  k_spline = 5,
+  re_edf_tol = 1e-4
+)
+
+# =========================================================
+# OUTPUTS
+# =========================================================
+
+# Alle Cluster
+round_df_4(res_cluster_pspline_gamma$cluster_results_all)
+
+# Zusammenfassung pro Experiment
+round_df_4(res_cluster_pspline_gamma$summary_results_all)
+
+# Gesamtübersicht
+round_df_4(res_cluster_pspline_gamma$overall)
+```
+
+Die clustergetrennten penalized-spline-Modelle mit gemeinsamem Spline für nLetters waren in allen Datensätzen technisch stabil fitbar. Inhaltlich zeigte sich jedoch kein einheitliches Muster. Während in c_ein kaum Evidenz für einen nichtlinearen Längeneffekt vorlag und n_bed weitgehend mit einem annähernd linearen Verlauf vereinbar war, zeigten n_ein, CS und Teile von c_bed EDF-Werte klar über 1 und damit Hinweise auf Nichtlinearität. Ein gemeinsamer penalized spline ist damit als flexible Sensitivitätsanalyse gut vertretbar, rechtfertigt aber auf Basis dieser Ergebnisse noch keine pauschale Ablösung des linearen nLetters-Terms in allen Clustern.
+
+Wegen der starken Designgebundenheit von nLetters an AOI x condition x Topic und der fehlenden konsistenten Evidenz für zusätzliche Flexibilität sollte der Längeneffekt parsimonisch modelliert werden. Ein gemeinsamer linearer nLetters-Term nutzt den Aggregationsvorteil, bleibt über alle Experimente hinweg anwendbar und vermeidet die zusätzliche Komplexität flexibler oder AOI-spezifischer Längenmodellierung, die in den vorliegenden Daten keinen durchgängig überzeugenden Mehrwert zeigt.
+
+Da bereits die alleinstehenden splines ohne AOI interaktion fragwürdig sind, versuchen wir gar nicht die Splines by AOI zu rechtfertigen.
+
+Wir testen noch performance in einem Topic - LOO von penalized splines vs nLetters.
+```{r}
+library(dplyr)
+library(purrr)
+library(tidyr)
+library(tibble)
+library(glmmTMB)
+library(mgcv)
+
+# =========================================================
+# INPUT
+# Erwartet vorhandene Datensätze:
+# c_bed, c_ein, n_bed, n_ein, CS
+# =========================================================
+
+dfs <- list(
+  c_bed = c_bed,
+  c_ein = c_ein,
+  n_bed = n_bed,
+  n_ein = n_ein,
+  CS    = CS
+)
+
+experiments_with_speaker <- c("n_bed", "n_ein", "CS")
+
+# =========================================================
+# HELFER
+# =========================================================
+
+round_df_4 <- function(df) {
+  df %>%
+    mutate(across(where(is.numeric), ~ round(.x, 4)))
+}
+
+safe_plain_df <- function(df) {
+  out <- as.data.frame(df, stringsAsFactors = FALSE)
+  rownames(out) <- NULL
+  out
+}
+
+safe_mean <- function(x) {
+  x <- x[is.finite(x)]
+  if (length(x) == 0) return(NA_real_)
+  mean(x)
+}
+
+safe_rmse <- function(sq_error) {
+  sq_error <- sq_error[is.finite(sq_error)]
+  if (length(sq_error) == 0) return(NA_real_)
+  sqrt(mean(sq_error))
+}
+
+# =========================================================
+# DATEN VORBEREITEN
+# =========================================================
+
+prep_topicloo_data <- function(df,
+                               response = "FRT",
+                               use_speaker = FALSE) {
+  needed <- c(response, "nLetters", "Participant", "Topic", "condition", "AOI", "aggr_level")
+  if (use_speaker) needed <- c(needed, "speaker")
+
+  missing_cols <- setdiff(needed, names(df))
+  if (length(missing_cols) > 0) {
+    stop("Fehlende Variablen: ", paste(missing_cols, collapse = ", "))
+  }
+
+  out <- df %>%
+    filter(!is.na(.data[[response]])) %>%
+    filter(.data[[response]] > 0) %>%
+    filter(!is.na(nLetters)) %>%
+    filter(!is.na(Participant), !is.na(Topic), !is.na(condition), !is.na(AOI), !is.na(aggr_level))
+
+  if (use_speaker) {
+    out <- out %>% filter(!is.na(speaker))
+  }
+
+  out <- out %>%
+    mutate(
+      Participant = factor(Participant),
+      Topic = factor(Topic),
+      condition = factor(condition),
+      AOI = factor(AOI),
+      aggr_level = factor(aggr_level)
+    )
+
+  if (use_speaker) {
+    out <- out %>% mutate(speaker = factor(speaker))
+  }
+
+  safe_plain_df(out)
+}
+
+# =========================================================
+# FORMELN
+# =========================================================
+
+make_linear_formula <- function(data,
+                                response = "FRT",
+                                use_speaker = FALSE) {
+  n_aoi <- nlevels(droplevels(data$AOI))
+
+  rhs <- if (n_aoi > 1) {
+    if (use_speaker) {
+      "AOI * speaker * condition + nLetters + (1 | Topic) + (1 | Participant)"
+    } else {
+      "AOI * condition + nLetters + (1 | Topic) + (1 | Participant)"
+    }
+  } else {
+    if (use_speaker) {
+      "condition * speaker + nLetters + (1 | Topic) + (1 | Participant)"
+    } else {
+      "condition + nLetters + (1 | Topic) + (1 | Participant)"
+    }
+  }
+
+  as.formula(paste(response, "~", rhs))
+}
+
+make_pspline_formula <- function(data,
+                                 response = "FRT",
+                                 use_speaker = FALSE,
+                                 k_spline = 5) {
+  n_aoi <- nlevels(droplevels(data$AOI))
+  n_unique_len <- dplyr::n_distinct(data$nLetters)
+
+  if (n_unique_len < 4) {
+    return(NULL)
+  }
+
+  k_eff <- min(k_spline, n_unique_len - 1)
+  k_eff <- max(k_eff, 4)
+
+  param_part <- if (n_aoi > 1) {
+    if (use_speaker) {
+      "AOI * speaker * condition"
+    } else {
+      "AOI * condition"
+    }
+  } else {
+    if (use_speaker) {
+      "condition * speaker"
+    } else {
+      "condition"
+    }
+  }
+
+  smooth_part <- paste0("s(nLetters, bs='ps', k=", k_eff, ")")
+  re_part <- "s(Participant, bs='re') + s(Topic, bs='re')"
+
+  as.formula(
+    paste(response, "~", param_part, "+", smooth_part, "+", re_part)
+  )
+}
+
+# =========================================================
+# FITS
+# =========================================================
+
+fit_linear_gamma <- function(data, formula) {
+  tryCatch(
+    glmmTMB::glmmTMB(
+      formula = formula,
+      data = data,
+      family = Gamma(link = "log")
+    ),
+    error = function(e) NULL
+  )
+}
+
+fit_pspline_gamma <- function(data, formula) {
+  tryCatch(
+    mgcv::gam(
+      formula = formula,
+      data = data,
+      family = Gamma(link = "log"),
+      method = "REML",
+      select = TRUE
+    ),
+    error = function(e) NULL
+  )
+}
+
+# =========================================================
+# EDF EXTRAKTION
+# =========================================================
+
+extract_pspline_edf <- function(fit) {
+  if (is.null(fit)) return(NA_real_)
+
+  s_tab <- tryCatch(
+    as.data.frame(summary(fit)$s.table),
+    error = function(e) NULL
+  )
+
+  if (is.null(s_tab) || nrow(s_tab) == 0) {
+    return(NA_real_)
+  }
+
+  s_tab$smooth_label <- rownames(s_tab)
+
+  spline_edf <- s_tab %>%
+    filter(grepl("^s\\(nLetters\\)", smooth_label)) %>%
+    summarise(edf = sum(edf, na.rm = TRUE)) %>%
+    pull(edf)
+
+  if (length(spline_edf) == 0) return(NA_real_)
+  spline_edf
+}
+
+# =========================================================
+# PREDICT HELFER
+# Population-level prediction in beiden Modellen
+# =========================================================
+
+predict_linear_gamma <- function(fit, newdata) {
+  if (is.null(fit)) return(rep(NA_real_, nrow(newdata)))
+
+  pred <- tryCatch(
+    predict(
+      fit,
+      newdata = newdata,
+      type = "response",
+      re.form = NULL,
+      allow.new.levels = TRUE
+    ),
+    error = function(e) NULL
+  )
+
+  if (is.null(pred)) return(rep(NA_real_, nrow(newdata)))
+  as.numeric(pred)
+}
+
+predict_pspline_gamma <- function(fit, newdata) {
+  if (is.null(fit)) return(rep(NA_real_, nrow(newdata)))
+
+  nd <- newdata
+  fit_data <- model.frame(fit)
+
+  if ("Participant" %in% names(nd) && "Participant" %in% names(fit_data)) {
+    train_part_levels <- levels(fit_data$Participant)
+    if (length(train_part_levels) > 0) {
+      nd$Participant <- factor(train_part_levels[1], levels = train_part_levels)
+    }
+  }
+
+  if ("Topic" %in% names(nd) && "Topic" %in% names(fit_data)) {
+    train_topic_levels <- levels(fit_data$Topic)
+    if (length(train_topic_levels) > 0) {
+      nd$Topic <- factor(train_topic_levels[1], levels = train_topic_levels)
+    }
+  }
+
+  pred <- tryCatch(
+    predict(
+      fit,
+      newdata = nd,
+      type = "response",
+      exclude = c("s(Participant)", "s(Topic)")
+    ),
+    error = function(e) NULL
+  )
+
+  if (is.null(pred)) return(rep(NA_real_, nrow(newdata)))
+  as.numeric(pred)
+}
+
+# =========================================================
+# EIN CLUSTER
+# =========================================================
+
+run_topicloo_one_cluster <- function(dat_cluster,
+                                     exp_name,
+                                     aggr_value,
+                                     response = "FRT",
+                                     use_speaker = FALSE,
+                                     k_spline = 5) {
+  topics <- unique(as.character(dat_cluster$Topic))
+  n_aoi <- nlevels(droplevels(dat_cluster$AOI))
+
+  res_rows <- map_dfr(topics, function(topic_i) {
+    train_df <- dat_cluster %>%
+      filter(as.character(Topic) != topic_i) %>%
+      droplevels() %>%
+      safe_plain_df()
+
+    test_df <- dat_cluster %>%
+      filter(as.character(Topic) == topic_i) %>%
+      droplevels() %>%
+      safe_plain_df()
+
+    linear_formula <- make_linear_formula(
+      data = train_df,
+      response = response,
+      use_speaker = use_speaker
+    )
+
+    pspline_formula <- make_pspline_formula(
+      data = train_df,
+      response = response,
+      use_speaker = use_speaker,
+      k_spline = k_spline
+    )
+
+    fit_linear <- fit_linear_gamma(train_df, linear_formula)
+
+    fit_pspline <- if (is.null(pspline_formula)) {
+      NULL
+    } else {
+      fit_pspline_gamma(
+        data = train_df,
+        formula = pspline_formula
+      )
+    }
+
+    pred_linear_num <- predict_linear_gamma(fit_linear, test_df)
+    pred_pspline_num <- predict_pspline_gamma(fit_pspline, test_df)
+
+    tibble(
+      experiment = exp_name,
+      aggr_level = as.character(aggr_value),
+      omitted_topic = as.character(topic_i),
+      n_aoi_in_cluster = n_aoi,
+      n_train = nrow(train_df),
+      n_test = nrow(test_df),
+
+      rmse_linear = safe_rmse((test_df[[response]] - pred_linear_num)^2),
+      mae_linear = safe_mean(abs(test_df[[response]] - pred_linear_num)),
+      rmse_pspline = safe_rmse((test_df[[response]] - pred_pspline_num)^2),
+      mae_pspline = safe_mean(abs(test_df[[response]] - pred_pspline_num)),
+
+      delta_rmse_pspline_minus_linear = rmse_pspline - rmse_linear,
+      delta_mae_pspline_minus_linear = mae_pspline - mae_linear,
+
+      pspline_edf = extract_pspline_edf(fit_pspline)
+    )
+  })
+
+  res_rows
+}
+
+# =========================================================
+# EIN EXPERIMENT
+# =========================================================
+
+run_topicloo_one_experiment <- function(df,
+                                        exp_name,
+                                        response = "FRT",
+                                        use_speaker = FALSE,
+                                        k_spline = 5) {
+  dat <- prep_topicloo_data(
+    df = df,
+    response = response,
+    use_speaker = use_speaker
+  )
+
+  aggr_vals <- unique(as.character(dat$aggr_level))
+
+  split_results <- map_dfr(aggr_vals, function(ag) {
+    dat_cluster <- dat %>%
+      filter(as.character(aggr_level) == ag) %>%
+      droplevels() %>%
+      safe_plain_df()
+
+    run_topicloo_one_cluster(
+      dat_cluster = dat_cluster,
+      exp_name = exp_name,
+      aggr_value = ag,
+      response = response,
+      use_speaker = use_speaker,
+      k_spline = k_spline
+    )
+  })
+
+  cluster_summary <- split_results %>%
+    group_by(experiment, aggr_level, n_aoi_in_cluster) %>%
+    summarise(
+      n_topic_splits = n(),
+      mean_rmse_linear = safe_mean(rmse_linear),
+      mean_rmse_pspline = safe_mean(rmse_pspline),
+      mean_mae_linear = safe_mean(mae_linear),
+      mean_mae_pspline = safe_mean(mae_pspline),
+      mean_delta_rmse_pspline_minus_linear = safe_mean(delta_rmse_pspline_minus_linear),
+      mean_delta_mae_pspline_minus_linear = safe_mean(delta_mae_pspline_minus_linear),
+      mean_pspline_edf = safe_mean(pspline_edf),
+      .groups = "drop"
+    ) %>%
+    arrange(aggr_level) %>%
+    round_df_4()
+
+  experiment_summary <- cluster_summary %>%
+    summarise(
+      experiment = exp_name,
+      n_clusters = n(),
+      mean_delta_rmse_pspline_minus_linear =
+        safe_mean(mean_delta_rmse_pspline_minus_linear),
+      mean_delta_mae_pspline_minus_linear =
+        safe_mean(mean_delta_mae_pspline_minus_linear),
+      mean_pspline_edf =
+        safe_mean(mean_pspline_edf)
+    ) %>%
+    round_df_4()
+
+  list(
+    split_results = round_df_4(split_results),
+    cluster_summary = cluster_summary,
+    experiment_summary = experiment_summary
+  )
+}
+
+# =========================================================
+# ÜBER ALLE EXPERIMENTE
+# =========================================================
+
+run_topicloo_linear_vs_pspline_all <- function(dfs,
+                                               response = "FRT",
+                                               experiments_with_speaker = c("n_bed", "n_ein", "CS"),
+                                               k_spline = 5) {
+  nested <- imap(dfs, function(df, exp_name) {
+    run_topicloo_one_experiment(
+      df = df,
+      exp_name = exp_name,
+      response = response,
+      use_speaker = exp_name %in% experiments_with_speaker,
+      k_spline = k_spline
+    )
+  })
+
+  split_results_all <- bind_rows(map(nested, "split_results")) %>%
+    round_df_4()
+
+  cluster_summary_all <- bind_rows(map(nested, "cluster_summary")) %>%
+    round_df_4()
+
+  experiment_summary_all <- bind_rows(map(nested, "experiment_summary")) %>%
+    round_df_4()
+
+  overall_summary <- cluster_summary_all %>%
+    summarise(
+      n_clusters = n(),
+      mean_delta_rmse_pspline_minus_linear =
+        safe_mean(mean_delta_rmse_pspline_minus_linear),
+      mean_delta_mae_pspline_minus_linear =
+        safe_mean(mean_delta_mae_pspline_minus_linear),
+      mean_pspline_edf =
+        safe_mean(mean_pspline_edf)
+    ) %>%
+    round_df_4()
+
+  list(
+    nested = nested,
+    split_results_all = split_results_all,
+    cluster_summary_all = cluster_summary_all,
+    experiment_summary_all = experiment_summary_all,
+    overall_summary = overall_summary
+  )
+}
+
+# =========================================================
+# RECHNEN
+# =========================================================
+
+res_topicloo_linear_vs_pspline <- run_topicloo_linear_vs_pspline_all(
+  dfs = dfs,
+  response = "FRT",
+  experiments_with_speaker = experiments_with_speaker,
+  k_spline = 5
+)
+
+# =========================================================
+# OUTPUTS
+# =========================================================
+
+#round_df_4(res_topicloo_linear_vs_pspline$split_results_all)
+round_df_4(res_topicloo_linear_vs_pspline$cluster_summary_all)
+round_df_4(res_topicloo_linear_vs_pspline$experiment_summary_all)
+#round_df_4(res_topicloo_linear_vs_pspline$overall_summary)
+```
+
+
+
+
+Für den Topic-LOO-Vergleich wurden Vorhersagen in beiden Modellen erzeugt
+
+Der clustergetrennte Topic-LOO-Vergleich ergab keinen konsistenten Vorhersagevorteil eines gemeinsamen penalized splines gegenüber einem linearen nLetters-Term. Zwar war der Spline technisch in allen Clustern stabil fitbar, seine Vorhersagegüte fiel jedoch über die Experimente hinweg uneinheitlich aus. In einzelnen Datensätzen zeigte sich ein leichter Vorteil, in anderen war der lineare Term gleich gut oder besser, und im CS-Datensatz schnitt der Spline deutlich schlechter ab. Für eine einheitliche Modellspezifikation über alle Experimente hinweg spricht dies gegen den penalized spline als Standardspezifikation und eher für den parsimonischeren linearen nLetters-Term.
+
+
+
+Fazit: wir modellieren mit der minimalen Version: nLetters als linearer Koeffizient

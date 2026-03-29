@@ -1,0 +1,1240 @@
+---
+title: "ConsultingModell"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+  echo = FALSE,
+  warning = FALSE,
+  message = FALSE,
+  error = FALSE
+)
+```
+
+```{r}
+library(here)
+library(dplyr)
+library(tidyr)
+library(purrr)
+library(tibble)
+library(ggplot2)
+library(lme4)
+library(mgcv)
+options(scipen = 999)
+```
+
+```{r}
+c_bed <- readRDS(here("prepped Data", "C_bed.rds"))
+c_ein <- readRDS(here("prepped Data", "C_ein.rds"))
+n_bed <- readRDS(here("prepped Data", "N_bed.rds"))
+n_ein <- readRDS(here("prepped Data", "N_ein.rds"))
+CS    <- readRDS(here("prepped Data", "CS.rds"))
+INC   <- readRDS(here("prepped Data", "INC.rds"))
+```
+
+FRT.WD Residuals vs Fitted
+```{r}
+library(dplyr)
+library(purrr)
+library(tibble)
+library(mgcv)
+library(glmmTMB)
+library(ggplot2)
+library(patchwork)
+
+# =========================================================
+# INPUT
+# Erwartet vorhandene Datensätze:
+# c_bed, c_ein, n_bed, n_ein, CS
+# =========================================================
+
+dfs <- list(
+  c_bed = c_bed,
+  c_ein = c_ein,
+  n_bed = n_bed,
+  n_ein = n_ein,
+  CS    = CS
+)
+
+experiments_with_speaker <- c("n_bed", "n_ein", "CS")
+
+# =========================================================
+# HELFER
+# =========================================================
+
+safe_plain_df <- function(df) {
+  out <- as.data.frame(df, stringsAsFactors = FALSE)
+  rownames(out) <- NULL
+  out
+}
+
+# =========================================================
+# DATEN AOI-WEISE VORBEREITEN
+# =========================================================
+
+prep_aoi_data <- function(df,
+                          response = "FRT.WD",
+                          use_speaker = FALSE) {
+  needed <- c(response, "condition", "AOI", "Participant", "Topic")
+  if (use_speaker) needed <- c(needed, "speaker")
+
+  missing_cols <- setdiff(needed, names(df))
+  if (length(missing_cols) > 0) {
+    stop("Fehlende Variablen: ", paste(missing_cols, collapse = ", "))
+  }
+
+  out <- df %>%
+    filter(!is.na(.data[[response]])) %>%
+    filter(.data[[response]] > 0) %>%
+    filter(!is.na(condition), !is.na(AOI), !is.na(Participant), !is.na(Topic)) %>%
+    mutate(
+      condition = factor(condition),
+      AOI = factor(AOI),
+      Participant = factor(Participant),
+      Topic = factor(Topic)
+    )
+
+  if (use_speaker) {
+    out <- out %>%
+      filter(!is.na(speaker)) %>%
+      mutate(speaker = factor(speaker))
+  }
+
+  safe_plain_df(out)
+}
+
+# =========================================================
+# FORMELN
+# =========================================================
+
+make_gam_normal_formula <- function(response = "FRT.WD",
+                                    use_speaker = FALSE) {
+  rhs <- if (use_speaker) {
+    "condition * speaker + s(Topic, bs = 're') + s(Participant, bs = 're')"
+  } else {
+    "condition + s(Topic, bs = 're') + s(Participant, bs = 're')"
+  }
+
+  as.formula(paste(response, "~", rhs))
+}
+
+make_gamma_glmmtmb_formula <- function(response = "FRT.WD",
+                                       use_speaker = FALSE) {
+  rhs <- if (use_speaker) {
+    "condition * speaker + (1 | Topic) + (1 | Participant)"
+  } else {
+    "condition + (1 | Topic) + (1 | Participant)"
+  }
+
+  as.formula(paste(response, "~", rhs))
+}
+
+# =========================================================
+# FITS
+# =========================================================
+
+fit_gam_normal <- function(data, formula) {
+  tryCatch(
+    mgcv::gam(
+      formula = formula,
+      data = data,
+      family = gaussian(),
+      method = "REML",
+      select = TRUE
+    ),
+    error = function(e) NULL
+  )
+}
+
+fit_gamma_glmmtmb <- function(data, formula) {
+  tryCatch(
+    glmmTMB::glmmTMB(
+      formula = formula,
+      data = data,
+      family = Gamma(link = "log")
+    ),
+    error = function(e) NULL
+  )
+}
+
+# =========================================================
+# RESPONSE-RESIDUEN SELBST BERECHNEN
+# residual = observed - fitted
+# =========================================================
+
+extract_gam_normal_resid_fitted <- function(fit, data, response = "FRT.WD") {
+  observed <- data[[response]]
+
+  if (is.null(fit)) {
+    return(tibble(
+      fitted = NA_real_,
+      residual = NA_real_,
+      observed = observed
+    ))
+  }
+
+  fitted_vals <- tryCatch(
+    as.numeric(predict(fit, type = "response")),
+    error = function(e) rep(NA_real_, nrow(data))
+  )
+
+  tibble(
+    fitted = fitted_vals,
+    residual = observed - fitted_vals,
+    observed = observed
+  )
+}
+
+extract_gamma_glmmtmb_resid_fitted <- function(fit, data, response = "FRT.WD") {
+  observed <- data[[response]]
+
+  if (is.null(fit)) {
+    return(tibble(
+      fitted = NA_real_,
+      residual = NA_real_,
+      observed = observed
+    ))
+  }
+
+  fitted_vals <- tryCatch(
+    as.numeric(predict(fit, type = "response")),
+    error = function(e) rep(NA_real_, nrow(data))
+  )
+
+  tibble(
+    fitted = fitted_vals,
+    residual = observed - fitted_vals,
+    observed = observed
+  )
+}
+
+# =========================================================
+# EINZELPLOTS
+# =========================================================
+
+plot_resid_vs_fitted_single <- function(plot_df,
+                                        experiment,
+                                        aoi,
+                                        model_label) {
+  ggplot(plot_df, aes(x = fitted, y = residual)) +
+    geom_point(alpha = 0.55) +
+    geom_hline(yintercept = 0, linetype = 2) +
+    labs(
+      title = model_label,
+      subtitle = paste0("Experiment: ", experiment, " | AOI: ", aoi),
+      x = "Fitted values",
+      y = "Response residuals"
+    ) +
+    theme_bw()
+}
+
+# =========================================================
+# EIN FALL: EXPERIMENT x AOI
+# =========================================================
+
+fit_and_plot_one_aoi <- function(df,
+                                 experiment_name,
+                                 aoi_value,
+                                 response = "FRT.WD",
+                                 use_speaker = FALSE) {
+  dat <- prep_aoi_data(
+    df = df,
+    response = response,
+    use_speaker = use_speaker
+  ) %>%
+    filter(as.character(AOI) == as.character(aoi_value)) %>%
+    droplevels() %>%
+    safe_plain_df()
+
+  if (nrow(dat) == 0) {
+    stop("Keine Daten nach Filterung für experiment = ", experiment_name, ", AOI = ", aoi_value)
+  }
+
+  f_gam_normal <- make_gam_normal_formula(
+    response = response,
+    use_speaker = use_speaker
+  )
+
+  f_gamma_glmm <- make_gamma_glmmtmb_formula(
+    response = response,
+    use_speaker = use_speaker
+  )
+
+  fit_normal <- fit_gam_normal(dat, f_gam_normal)
+  fit_gamma  <- fit_gamma_glmmtmb(dat, f_gamma_glmm)
+
+  plot_df_normal <- extract_gam_normal_resid_fitted(
+    fit = fit_normal,
+    data = dat,
+    response = response
+  )
+
+  plot_df_gamma <- extract_gamma_glmmtmb_resid_fitted(
+    fit = fit_gamma,
+    data = dat,
+    response = response
+  )
+
+  p_normal <- plot_resid_vs_fitted_single(
+    plot_df = plot_df_normal,
+    experiment = experiment_name,
+    aoi = aoi_value,
+    model_label = "Normal GAM"
+  )
+
+  p_gamma <- plot_resid_vs_fitted_single(
+    plot_df = plot_df_gamma,
+    experiment = experiment_name,
+    aoi = aoi_value,
+    model_label = "Gamma glmmTMB"
+  )
+
+  combined_plot <- p_normal + p_gamma + plot_layout(ncol = 2)
+
+  list(
+    experiment = experiment_name,
+    AOI = as.character(aoi_value),
+    n_obs = nrow(dat),
+    fit_normal = fit_normal,
+    fit_gamma = fit_gamma,
+    plot_data_normal = plot_df_normal,
+    plot_data_gamma = plot_df_gamma,
+    plot = combined_plot
+  )
+}
+
+# =========================================================
+# ALLE EXPERIMENTE x AOI
+# =========================================================
+
+fit_and_plot_all_aois <- function(dfs,
+                                  response = "FRT.WD",
+                                  experiments_with_speaker = c("n_bed", "n_ein", "CS")) {
+  out <- list()
+
+  for (exp_name in names(dfs)) {
+    df_exp <- dfs[[exp_name]]
+    use_speaker <- exp_name %in% experiments_with_speaker
+
+    dat_exp <- prep_aoi_data(
+      df = df_exp,
+      response = response,
+      use_speaker = use_speaker
+    )
+
+    aois <- sort(unique(as.character(dat_exp$AOI)))
+
+    for (aoi_i in aois) {
+      key <- paste(exp_name, aoi_i, sep = "__")
+
+      out[[key]] <- fit_and_plot_one_aoi(
+        df = df_exp,
+        experiment_name = exp_name,
+        aoi_value = aoi_i,
+        response = response,
+        use_speaker = use_speaker
+      )
+    }
+  }
+
+  out
+}
+
+# =========================================================
+# ALLE PLOTS DIREKT ALS OUTPUT-LISTE
+# =========================================================
+
+extract_all_plots <- function(res_obj) {
+  purrr::map(res_obj, "plot")
+}
+
+# =========================================================
+# EINEN PLOT EXTRAHIEREN
+# =========================================================
+
+get_aoi_plot <- function(res_obj, experiment, aoi) {
+  key <- paste(experiment, aoi, sep = "__")
+
+  if (!(key %in% names(res_obj))) {
+    stop("Kein Eintrag gefunden für experiment = ", experiment, ", AOI = ", aoi)
+  }
+
+  res_obj[[key]]$plot
+}
+
+# =========================================================
+# EIN GANZES RESULTAT EXTRAHIEREN
+# =========================================================
+
+get_aoi_result <- function(res_obj, experiment, aoi) {
+  key <- paste(experiment, aoi, sep = "__")
+
+  if (!(key %in% names(res_obj))) {
+    stop("Kein Eintrag gefunden für experiment = ", experiment, ", AOI = ", aoi)
+  }
+
+  res_obj[[key]]
+}
+
+# =========================================================
+# RECHNEN
+# =========================================================
+
+res_frtwd_residplots <- fit_and_plot_all_aois(
+  dfs = dfs,
+  response = "FRT.WD",
+  experiments_with_speaker = experiments_with_speaker
+)
+
+# Alle Plots direkt als Output-Liste
+all_frtwd_plots <- extract_all_plots(res_frtwd_residplots)
+
+# =========================================================
+# OUTPUTS
+# =========================================================
+
+# 1) Alle Plots liegen hier drin:
+all_frtwd_plots
+
+# 2) Einen konkreten Plot extrahieren:
+# get_aoi_plot(res_frtwd_residplots, experiment = "c_bed", aoi = "1")
+
+# 3) Ganzes Ergebnis für einen Fall:
+# tmp <- get_aoi_result(res_frtwd_residplots, experiment = "c_bed", aoi = "1")
+# tmp$n_obs
+# tmp$fit_normal
+# tmp$fit_gamma
+# tmp$plot_data_normal
+# tmp$plot_data_gamma
+# tmp$plot
+```
+
+```{r}
+library(dplyr)
+library(purrr)
+library(tibble)
+library(mgcv)
+library(glmmTMB)
+library(ggplot2)
+library(patchwork)
+
+# =========================================================
+# INPUT
+# Erwartet vorhandene Datensätze:
+# c_bed, c_ein, n_bed, n_ein, CS
+# =========================================================
+
+dfs <- list(
+  c_bed = c_bed,
+  c_ein = c_ein,
+  n_bed = n_bed,
+  n_ein = n_ein,
+  CS    = CS
+)
+
+experiments_with_speaker <- c("n_bed", "n_ein", "CS")
+
+# =========================================================
+# HELFER
+# =========================================================
+
+safe_plain_df <- function(df) {
+  out <- as.data.frame(df, stringsAsFactors = FALSE)
+  rownames(out) <- NULL
+  out
+}
+
+# =========================================================
+# DATEN AOI-WEISE VORBEREITEN
+# =========================================================
+
+prep_aoi_data <- function(df,
+                          response = "TRT.WD",
+                          use_speaker = FALSE) {
+  needed <- c(response, "condition", "AOI", "Participant", "Topic")
+  if (use_speaker) needed <- c(needed, "speaker")
+
+  missing_cols <- setdiff(needed, names(df))
+  if (length(missing_cols) > 0) {
+    stop("Fehlende Variablen: ", paste(missing_cols, collapse = ", "))
+  }
+
+  out <- df %>%
+    filter(!is.na(.data[[response]])) %>%
+    filter(.data[[response]] > 0) %>%
+    filter(!is.na(condition), !is.na(AOI), !is.na(Participant), !is.na(Topic)) %>%
+    mutate(
+      condition = factor(condition),
+      AOI = factor(AOI),
+      Participant = factor(Participant),
+      Topic = factor(Topic)
+    )
+
+  if (use_speaker) {
+    out <- out %>%
+      filter(!is.na(speaker)) %>%
+      mutate(speaker = factor(speaker))
+  }
+
+  safe_plain_df(out)
+}
+
+# =========================================================
+# FORMELN
+# =========================================================
+
+make_gam_normal_formula <- function(response = "TRT.WD",
+                                    use_speaker = FALSE) {
+  rhs <- if (use_speaker) {
+    "condition * speaker + s(Topic, bs = 're') + s(Participant, bs = 're')"
+  } else {
+    "condition + s(Topic, bs = 're') + s(Participant, bs = 're')"
+  }
+
+  as.formula(paste(response, "~", rhs))
+}
+
+make_gamma_glmmtmb_formula <- function(response = "TRT.WD",
+                                       use_speaker = FALSE) {
+  rhs <- if (use_speaker) {
+    "condition * speaker + (1 | Topic) + (1 | Participant)"
+  } else {
+    "condition + (1 | Topic) + (1 | Participant)"
+  }
+
+  as.formula(paste(response, "~", rhs))
+}
+
+# =========================================================
+# FITS
+# =========================================================
+
+fit_gam_normal <- function(data, formula) {
+  tryCatch(
+    mgcv::gam(
+      formula = formula,
+      data = data,
+      family = gaussian(),
+      method = "REML",
+      select = TRUE
+    ),
+    error = function(e) NULL
+  )
+}
+
+fit_gamma_glmmtmb <- function(data, formula) {
+  tryCatch(
+    glmmTMB::glmmTMB(
+      formula = formula,
+      data = data,
+      family = Gamma(link = "log")
+    ),
+    error = function(e) NULL
+  )
+}
+
+# =========================================================
+# RESPONSE-RESIDUEN SELBST BERECHNEN
+# residual = observed - fitted
+# =========================================================
+
+extract_gam_normal_resid_fitted <- function(fit, data, response = "TRT.WD") {
+  observed <- data[[response]]
+
+  if (is.null(fit)) {
+    return(tibble(
+      fitted = NA_real_,
+      residual = NA_real_,
+      observed = observed
+    ))
+  }
+
+  fitted_vals <- tryCatch(
+    as.numeric(predict(fit, type = "response")),
+    error = function(e) rep(NA_real_, nrow(data))
+  )
+
+  tibble(
+    fitted = fitted_vals,
+    residual = observed - fitted_vals,
+    observed = observed
+  )
+}
+
+extract_gamma_glmmtmb_resid_fitted <- function(fit, data, response = "TRT.WD") {
+  observed <- data[[response]]
+
+  if (is.null(fit)) {
+    return(tibble(
+      fitted = NA_real_,
+      residual = NA_real_,
+      observed = observed
+    ))
+  }
+
+  fitted_vals <- tryCatch(
+    as.numeric(predict(fit, type = "response")),
+    error = function(e) rep(NA_real_, nrow(data))
+  )
+
+  tibble(
+    fitted = fitted_vals,
+    residual = observed - fitted_vals,
+    observed = observed
+  )
+}
+
+# =========================================================
+# EINZELPLOTS
+# =========================================================
+
+plot_resid_vs_fitted_single <- function(plot_df,
+                                        experiment,
+                                        aoi,
+                                        model_label) {
+  ggplot(plot_df, aes(x = fitted, y = residual)) +
+    geom_point(alpha = 0.55) +
+    geom_hline(yintercept = 0, linetype = 2) +
+    labs(
+      title = model_label,
+      subtitle = paste0("Experiment: ", experiment, " | AOI: ", aoi),
+      x = "Fitted values",
+      y = "Response residuals"
+    ) +
+    theme_bw()
+}
+
+# =========================================================
+# EIN FALL: EXPERIMENT x AOI
+# =========================================================
+
+fit_and_plot_one_aoi <- function(df,
+                                 experiment_name,
+                                 aoi_value,
+                                 response = "TRT.WD",
+                                 use_speaker = FALSE) {
+  dat <- prep_aoi_data(
+    df = df,
+    response = response,
+    use_speaker = use_speaker
+  ) %>%
+    filter(as.character(AOI) == as.character(aoi_value)) %>%
+    droplevels() %>%
+    safe_plain_df()
+
+  if (nrow(dat) == 0) {
+    stop("Keine Daten nach Filterung für experiment = ", experiment_name, ", AOI = ", aoi_value)
+  }
+
+  f_gam_normal <- make_gam_normal_formula(
+    response = response,
+    use_speaker = use_speaker
+  )
+
+  f_gamma_glmm <- make_gamma_glmmtmb_formula(
+    response = response,
+    use_speaker = use_speaker
+  )
+
+  fit_normal <- fit_gam_normal(dat, f_gam_normal)
+  fit_gamma  <- fit_gamma_glmmtmb(dat, f_gamma_glmm)
+
+  plot_df_normal <- extract_gam_normal_resid_fitted(
+    fit = fit_normal,
+    data = dat,
+    response = response
+  )
+
+  plot_df_gamma <- extract_gamma_glmmtmb_resid_fitted(
+    fit = fit_gamma,
+    data = dat,
+    response = response
+  )
+
+  p_normal <- plot_resid_vs_fitted_single(
+    plot_df = plot_df_normal,
+    experiment = experiment_name,
+    aoi = aoi_value,
+    model_label = "Normal GAM"
+  )
+
+  p_gamma <- plot_resid_vs_fitted_single(
+    plot_df = plot_df_gamma,
+    experiment = experiment_name,
+    aoi = aoi_value,
+    model_label = "Gamma glmmTMB"
+  )
+
+  combined_plot <- p_normal + p_gamma + plot_layout(ncol = 2)
+
+  list(
+    experiment = experiment_name,
+    AOI = as.character(aoi_value),
+    n_obs = nrow(dat),
+    fit_normal = fit_normal,
+    fit_gamma = fit_gamma,
+    plot_data_normal = plot_df_normal,
+    plot_data_gamma = plot_df_gamma,
+    plot = combined_plot
+  )
+}
+
+# =========================================================
+# ALLE EXPERIMENTE x AOI
+# =========================================================
+
+fit_and_plot_all_aois <- function(dfs,
+                                  response = "TRT.WD",
+                                  experiments_with_speaker = c("n_bed", "n_ein", "CS")) {
+  out <- list()
+
+  for (exp_name in names(dfs)) {
+    df_exp <- dfs[[exp_name]]
+    use_speaker <- exp_name %in% experiments_with_speaker
+
+    dat_exp <- prep_aoi_data(
+      df = df_exp,
+      response = response,
+      use_speaker = use_speaker
+    )
+
+    aois <- sort(unique(as.character(dat_exp$AOI)))
+
+    for (aoi_i in aois) {
+      key <- paste(exp_name, aoi_i, sep = "__")
+
+      out[[key]] <- fit_and_plot_one_aoi(
+        df = df_exp,
+        experiment_name = exp_name,
+        aoi_value = aoi_i,
+        response = response,
+        use_speaker = use_speaker
+      )
+    }
+  }
+
+  out
+}
+
+# =========================================================
+# ALLE PLOTS DIREKT ALS OUTPUT-LISTE
+# =========================================================
+
+extract_all_plots <- function(res_obj) {
+  purrr::map(res_obj, "plot")
+}
+
+# =========================================================
+# EINEN PLOT EXTRAHIEREN
+# =========================================================
+
+get_aoi_plot <- function(res_obj, experiment, aoi) {
+  key <- paste(experiment, aoi, sep = "__")
+
+  if (!(key %in% names(res_obj))) {
+    stop("Kein Eintrag gefunden für experiment = ", experiment, ", AOI = ", aoi)
+  }
+
+  res_obj[[key]]$plot
+}
+
+# =========================================================
+# EIN GANZES RESULTAT EXTRAHIEREN
+# =========================================================
+
+get_aoi_result <- function(res_obj, experiment, aoi) {
+  key <- paste(experiment, aoi, sep = "__")
+
+  if (!(key %in% names(res_obj))) {
+    stop("Kein Eintrag gefunden für experiment = ", experiment, ", AOI = ", aoi)
+  }
+
+  res_obj[[key]]
+}
+
+# =========================================================
+# RECHNEN
+# =========================================================
+
+res_trtwd_residplots <- fit_and_plot_all_aois(
+  dfs = dfs,
+  response = "TRT.WD",
+  experiments_with_speaker = experiments_with_speaker
+)
+
+# Alle Plots direkt als Output-Liste
+all_trtwd_plots <- extract_all_plots(res_trtwd_residplots)
+
+# =========================================================
+# OUTPUTS
+# =========================================================
+
+# 1) Alle Plots liegen hier drin:
+all_trtwd_plots
+
+# 2) Einen konkreten Plot extrahieren:
+# get_aoi_plot(res_trtwd_residplots, experiment = "c_bed", aoi = "1")
+
+# 3) Ganzes Ergebnis für einen Fall:
+# tmp <- get_aoi_result(res_trtwd_residplots, experiment = "c_bed", aoi = "1")
+# tmp$n_obs
+# tmp$fit_normal
+# tmp$fit_gamma
+# tmp$plot_data_normal
+# tmp$plot_data_gamma
+# tmp$plot
+```
+
+
+
+```{r}
+library(dplyr)
+library(purrr)
+library(tibble)
+library(mgcv)
+library(glmmTMB)
+library(ggplot2)
+library(patchwork)
+
+set.seed(123)
+
+# =========================================================
+# INPUT
+# Nur die gewünschten Experimente
+# =========================================================
+
+dfs_sub <- list(
+  c_bed = c_bed,
+  c_ein = c_ein,
+  CS    = CS
+)
+
+experiments_with_speaker <- c("CS")
+
+# =========================================================
+# HELFER
+# =========================================================
+
+safe_plain_df <- function(df) {
+  out <- as.data.frame(df, stringsAsFactors = FALSE)
+  rownames(out) <- NULL
+  out
+}
+
+collapse_unique <- function(x) {
+  x <- unique(stats::na.omit(x))
+  if (length(x) == 0) return(NA_character_)
+  paste(x, collapse = " | ")
+}
+
+# =========================================================
+# DATEN AOI-WEISE
+# =========================================================
+
+prep_aoi_data <- function(df,
+                          response,
+                          use_speaker = FALSE) {
+  needed <- c(response, "condition", "AOI", "Participant", "Topic")
+  if (use_speaker) needed <- c(needed, "speaker")
+
+  missing_cols <- setdiff(needed, names(df))
+  if (length(missing_cols) > 0) {
+    stop("Fehlende Variablen: ", paste(missing_cols, collapse = ", "))
+  }
+
+  out <- df %>%
+    filter(!is.na(.data[[response]])) %>%
+    filter(.data[[response]] > 0) %>%
+    filter(!is.na(condition), !is.na(AOI), !is.na(Participant), !is.na(Topic)) %>%
+    mutate(
+      condition = factor(condition),
+      AOI = factor(AOI),
+      Participant = factor(Participant),
+      Topic = factor(Topic)
+    )
+
+  if (use_speaker) {
+    out <- out %>%
+      filter(!is.na(speaker)) %>%
+      mutate(speaker = factor(speaker))
+  }
+
+  safe_plain_df(out)
+}
+
+# =========================================================
+# FORMELN
+# =========================================================
+
+make_gam_normal_formula <- function(response,
+                                    use_speaker = FALSE) {
+  rhs <- if (use_speaker) {
+    "condition * speaker + s(Topic, bs = 're') + s(Participant, bs = 're')"
+  } else {
+    "condition + s(Topic, bs = 're') + s(Participant, bs = 're')"
+  }
+
+  as.formula(paste(response, "~", rhs))
+}
+
+make_negbin2_formula <- function(response,
+                                 use_speaker = FALSE) {
+  rhs <- if (use_speaker) {
+    "condition * speaker + (1 | Topic) + (1 | Participant)"
+  } else {
+    "condition + (1 | Topic) + (1 | Participant)"
+  }
+
+  as.formula(paste(response, "~", rhs))
+}
+
+# =========================================================
+# FITS
+# =========================================================
+
+fit_gam_normal <- function(data, formula) {
+  tryCatch(
+    mgcv::gam(
+      formula = formula,
+      data = data,
+      family = gaussian(),
+      method = "REML",
+      select = TRUE
+    ),
+    error = function(e) NULL
+  )
+}
+
+fit_negbin2 <- function(data, formula) {
+  tryCatch(
+    glmmTMB::glmmTMB(
+      formula = formula,
+      data = data,
+      family = glmmTMB::nbinom2(link = "log")
+    ),
+    error = function(e) NULL
+  )
+}
+
+# =========================================================
+# SIMULATION
+# =========================================================
+
+simulate_gam_normal <- function(fit, n_obs, nsim = 200) {
+  if (is.null(fit)) return(NULL)
+
+  mu <- tryCatch(
+    as.numeric(predict(fit, type = "response")),
+    error = function(e) NULL
+  )
+
+  sigma <- tryCatch(
+    sqrt(summary(fit)$scale),
+    error = function(e) NULL
+  )
+
+  if (is.null(mu) || is.null(sigma) || !is.finite(sigma)) return(NULL)
+
+  sims <- replicate(
+    nsim,
+    stats::rnorm(n = n_obs, mean = mu, sd = sigma)
+  )
+
+  sims[sims <= 0] <- NA_real_
+  sims
+}
+
+simulate_negbin2 <- function(fit, nsim = 200) {
+  if (is.null(fit)) return(NULL)
+
+  sim_list <- tryCatch(
+    simulate(fit, nsim = nsim),
+    error = function(e) NULL
+  )
+
+  if (is.null(sim_list)) return(NULL)
+
+  sim_mat <- as.matrix(sim_list)
+  storage.mode(sim_mat) <- "numeric"
+  sim_mat
+}
+
+# =========================================================
+# DICHTEDATEN
+# =========================================================
+
+make_density_df <- function(x, label, n = 512, from = NULL, to = NULL) {
+  x <- x[is.finite(x)]
+  if (length(x) < 2) {
+    return(tibble(x = NA_real_, y = NA_real_, source = label))
+  }
+
+  dd <- density(x, n = n, from = from, to = to, na.rm = TRUE)
+
+  tibble(
+    x = dd$x,
+    y = dd$y,
+    source = label
+  )
+}
+
+make_mean_sim_density_df <- function(sim_mat, label, from = NULL, to = NULL, n = 512) {
+  if (is.null(sim_mat)) {
+    return(tibble(x = NA_real_, y = NA_real_, source = label))
+  }
+
+  dens_list <- vector("list", ncol(sim_mat))
+
+  for (j in seq_len(ncol(sim_mat))) {
+    xj <- sim_mat[, j]
+    xj <- xj[is.finite(xj)]
+    if (length(xj) < 2) next
+
+    dd <- density(xj, n = n, from = from, to = to, na.rm = TRUE)
+    dens_list[[j]] <- tibble(
+      x = dd$x,
+      y = dd$y
+    )
+  }
+
+  dens_list <- dens_list[!vapply(dens_list, is.null, logical(1))]
+
+  if (length(dens_list) == 0) {
+    return(tibble(x = NA_real_, y = NA_real_, source = label))
+  }
+
+  bind_rows(dens_list, .id = "sim_id") %>%
+    group_by(x) %>%
+    summarise(y = mean(y, na.rm = TRUE), .groups = "drop") %>%
+    mutate(source = label)
+}
+
+# =========================================================
+# EIN PLOT
+# =========================================================
+
+plot_density_compare <- function(density_df,
+                                 experiment,
+                                 aoi,
+                                 response) {
+  ggplot(density_df, aes(x = x, y = y, color = source, linetype = source)) +
+    geom_line(linewidth = 0.9) +
+    scale_color_manual(
+      values = c(
+        "Observed" = "black",
+        "Normal GAM simulated" = "steelblue",
+        "NegBin2 glmmTMB simulated" = "firebrick"
+      )
+    ) +
+    labs(
+      title = "Dichtevergleich",
+      subtitle = paste0("Experiment: ", experiment, " | AOI: ", aoi, " | Response: ", response),
+      x = response,
+      y = "Density",
+      color = NULL,
+      linetype = NULL
+    ) +
+    theme_bw()
+}
+
+# =========================================================
+# EIN FALL: experiment x AOI x response
+# =========================================================
+
+fit_and_plot_one_case <- function(df,
+                                  experiment_name,
+                                  aoi_value,
+                                  response,
+                                  use_speaker = FALSE,
+                                  nsim = 200) {
+  dat <- prep_aoi_data(
+    df = df,
+    response = response,
+    use_speaker = use_speaker
+  ) %>%
+    filter(as.character(AOI) == as.character(aoi_value)) %>%
+    droplevels() %>%
+    safe_plain_df()
+
+  if (nrow(dat) == 0) {
+    stop("Keine Daten nach Filterung für experiment = ", experiment_name,
+         ", AOI = ", aoi_value,
+         ", response = ", response)
+  }
+
+  f_normal <- make_gam_normal_formula(
+    response = response,
+    use_speaker = use_speaker
+  )
+
+  f_negbin2 <- make_negbin2_formula(
+    response = response,
+    use_speaker = use_speaker
+  )
+
+  fit_normal <- fit_gam_normal(dat, f_normal)
+  fit_negbin2 <- fit_negbin2(dat, f_negbin2)
+
+  obs <- dat[[response]]
+  x_min <- min(obs, na.rm = TRUE)
+  x_max <- max(obs, na.rm = TRUE)
+
+  sim_normal <- simulate_gam_normal(
+    fit = fit_normal,
+    n_obs = nrow(dat),
+    nsim = nsim
+  )
+
+  sim_negbin2 <- simulate_negbin2(
+    fit = fit_negbin2,
+    nsim = nsim
+  )
+
+  density_obs <- make_density_df(
+    x = obs,
+    label = "Observed",
+    from = x_min,
+    to = x_max
+  )
+
+  density_normal <- make_mean_sim_density_df(
+    sim_mat = sim_normal,
+    label = "Normal GAM simulated",
+    from = x_min,
+    to = x_max
+  )
+
+  density_negbin2 <- make_mean_sim_density_df(
+    sim_mat = sim_negbin2,
+    label = "NegBin2 glmmTMB simulated",
+    from = x_min,
+    to = x_max
+  )
+
+  density_df <- bind_rows(
+    density_obs,
+    density_normal,
+    density_negbin2
+  )
+
+  p <- plot_density_compare(
+    density_df = density_df,
+    experiment = experiment_name,
+    aoi = aoi_value,
+    response = response
+  )
+
+  list(
+    experiment = experiment_name,
+    AOI = as.character(aoi_value),
+    response = response,
+    n_obs = nrow(dat),
+    fit_normal = fit_normal,
+    fit_negbin2 = fit_negbin2,
+    density_data = density_df,
+    plot = p
+  )
+}
+
+# =========================================================
+# ALLE FÄLLE
+# =========================================================
+
+fit_and_plot_all_cases <- function(dfs,
+                                   responses = c("FRT.WD", "TRT.WD"),
+                                   experiments_with_speaker = c("CS"),
+                                   nsim = 200) {
+  out <- list()
+
+  for (resp in responses) {
+    for (exp_name in names(dfs)) {
+      df_exp <- dfs[[exp_name]]
+      use_speaker <- exp_name %in% experiments_with_speaker
+
+      dat_exp <- prep_aoi_data(
+        df = df_exp,
+        response = resp,
+        use_speaker = use_speaker
+      )
+
+      aois <- sort(unique(as.character(dat_exp$AOI)))
+
+      for (aoi_i in aois) {
+        key <- paste(resp, exp_name, aoi_i, sep = "__")
+
+        out[[key]] <- fit_and_plot_one_case(
+          df = df_exp,
+          experiment_name = exp_name,
+          aoi_value = aoi_i,
+          response = resp,
+          use_speaker = use_speaker,
+          nsim = nsim
+        )
+      }
+    }
+  }
+
+  out
+}
+
+# =========================================================
+# EXTRAKTION
+# =========================================================
+
+extract_all_plots <- function(res_obj) {
+  purrr::map(res_obj, "plot")
+}
+
+get_plot <- function(res_obj, response, experiment, aoi) {
+  key <- paste(response, experiment, aoi, sep = "__")
+
+  if (!(key %in% names(res_obj))) {
+    stop("Kein Eintrag gefunden für response = ", response,
+         ", experiment = ", experiment,
+         ", AOI = ", aoi)
+  }
+
+  res_obj[[key]]$plot
+}
+
+get_result <- function(res_obj, response, experiment, aoi) {
+  key <- paste(response, experiment, aoi, sep = "__")
+
+  if (!(key %in% names(res_obj))) {
+    stop("Kein Eintrag gefunden für response = ", response,
+         ", experiment = ", experiment,
+         ", AOI = ", aoi)
+  }
+
+  res_obj[[key]]
+}
+
+# =========================================================
+# RECHNEN
+# =========================================================
+
+res_density_normal_vs_negbin2 <- fit_and_plot_all_cases(
+  dfs = dfs_sub,
+  responses = c("FRT.WD", "TRT.WD"),
+  experiments_with_speaker = experiments_with_speaker,
+  nsim = 200
+)
+
+all_density_plots <- extract_all_plots(res_density_normal_vs_negbin2)
+
+# =========================================================
+# OUTPUTS
+# =========================================================
+
+all_density_plots
+
+# Beispiele:
+# get_plot(res_density_normal_vs_negbin2, response = "FRT.WD", experiment = "c_bed", aoi = "1")
+# get_plot(res_density_normal_vs_negbin2, response = "TRT.WD", experiment = "CS", aoi = "2")
+
+# tmp <- get_result(res_density_normal_vs_negbin2, response = "FRT.WD", experiment = "c_ein", aoi = "1")
+# tmp$density_data
+# tmp$plot
+```
+

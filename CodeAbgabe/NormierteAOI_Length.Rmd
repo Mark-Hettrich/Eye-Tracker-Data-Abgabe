@@ -1,0 +1,1025 @@
+---
+title: "NormierteAOI_Length"
+output: html_document
+---
+
+```{r}
+library(here)
+library(dplyr)
+library(tidyr)
+library(purrr)
+library(tibble)
+library(ggplot2)
+library(lme4)
+library(mgcv)
+options(scipen = 999)
+```
+
+```{r}
+c_bed <- readRDS(here("prepped Data", "C_bed.rds"))
+c_ein <- readRDS(here("prepped Data", "C_ein.rds"))
+n_bed <- readRDS(here("prepped Data", "N_bed.rds"))
+n_ein <- readRDS(here("prepped Data", "N_ein.rds"))
+CS    <- readRDS(here("prepped Data", "CS.rds"))
+INC   <- readRDS(here("prepped Data", "INC.rds"))
+```
+
+```{r}
+c_bed <- c_bed %>% dplyr::filter(!is.na(FRT), FRT > 0)
+c_ein <- c_ein %>% dplyr::filter(!is.na(FRT), FRT > 0)
+n_bed <- n_bed %>% dplyr::filter(!is.na(FRT), FRT > 0)
+n_ein <- n_ein %>% dplyr::filter(!is.na(FRT), FRT > 0)
+CS    <- CS    %>% dplyr::filter(!is.na(FRT), FRT > 0)
+INC   <- INC   %>% dplyr::filter(!is.na(FRT), FRT > 0)
+```
+
+
+Nötig für Normierung
+1. Prüfung: Beziehung auf Originalskala ist näherungsweise proportional und geht grob durch 0
+
+2. Prüfen, ob nach Normierung noch ein Längeneffekt bleibt
+Im Modell für rt_norm sollte der Koeffizient von log_length ungefähr 0 sein.
+
+3. Modell mit und ohne Länge vergleichen
+Wenn length nach Normierung immer noch Fit bringt, ist die Normierung nicht sauber.
+
+
+
+Wir testen anahnd der plausiblen Familie: Gamma log link
+
+Normierung 1) 
+```{r}
+library(dplyr)
+library(purrr)
+library(tibble)
+
+# =========================================================
+# DATEN
+# Erwartet vorhandene Objekte:
+# c_bed, c_ein, n_bed, n_ein, CS
+# =========================================================
+
+dfs_norm_origin <- list(
+  c_bed = c_bed,
+  c_ein = c_ein,
+  n_bed = n_bed,
+  n_ein = n_ein,
+  CS    = CS
+)
+
+# =========================================================
+# HILFSFUNKTIONEN
+# =========================================================
+
+round_df_4 <- function(df) {
+  df %>%
+    mutate(across(where(is.numeric), ~ round(.x, 4)))
+}
+
+rmse_vec <- function(obs, pred) {
+  sqrt(mean((obs - pred)^2, na.rm = TRUE))
+}
+
+classify_origin_check <- function(rmse_ratio_zero_vs_free) {
+  if (is.na(rmse_ratio_zero_vs_free)) {
+    return("nicht beurteilbar")
+  }
+  if (rmse_ratio_zero_vs_free <= 1.05) {
+    return("Ursprung plausibel")
+  }
+  if (rmse_ratio_zero_vs_free <= 1.15) {
+    return("grenzwertig")
+  }
+  "spricht gegen Normierung"
+}
+
+# =========================================================
+# CHECK 1 FÜR NORMIERUNG:
+# Originalskala grob proportional und durch 0?
+# =========================================================
+
+run_norm_check_origin <- function(datas,
+                                  rt = "FRT",
+                                  length_var = "nWords") {
+  stopifnot(length_var %in% c("nWords", "nLetters"))
+
+  out_rows <- list()
+
+  for (exp_name in names(datas)) {
+    df_exp <- datas[[exp_name]]
+
+    for (aoi_now in sort(unique(df_exp$AOI))) {
+      dat <- df_exp %>%
+        filter(AOI == aoi_now) %>%
+        mutate(
+          condition = factor(condition),
+          Topic = factor(Topic),
+          Participant = factor(Participant)
+        ) %>%
+        filter(
+          !is.na(.data[[rt]]),
+          .data[[rt]] > 0,
+          !is.na(.data[[length_var]]),
+          .data[[length_var]] > 0
+        ) %>%
+        mutate(
+          rt_raw = .data[[rt]],
+          length_value = .data[[length_var]]
+        )
+
+      if (exp_name %in% c("n_bed", "n_ein", "CS")) {
+        dat <- dat %>%
+          mutate(speaker = factor(speaker)) %>%
+          filter(!is.na(speaker))
+      }
+
+      group_vars <- c("Topic", "condition")
+      if (exp_name %in% c("n_bed", "n_ein", "CS")) {
+        group_vars <- c(group_vars, "speaker")
+      }
+
+      cell_dat <- dat %>%
+        group_by(across(all_of(group_vars))) %>%
+        summarise(
+          length_value = median(length_value, na.rm = TRUE),
+          mean_rt = mean(rt_raw, na.rm = TRUE),
+          .groups = "drop"
+        )
+
+      n_cells <- nrow(cell_dat)
+      n_distinct_length_cells <- dplyr::n_distinct(cell_dat$length_value)
+
+      if (n_cells < 3 || n_distinct_length_cells < 2) {
+        out_rows[[length(out_rows) + 1]] <- tibble(
+          exp = exp_name,
+          AOI = as.character(aoi_now),
+          rt = rt,
+          length_var = length_var,
+          n_obs = nrow(dat),
+          n_cells = n_cells,
+          n_distinct_length_cells = n_distinct_length_cells,
+          min_length = suppressWarnings(min(dat$length_value, na.rm = TRUE)),
+          max_length = suppressWarnings(max(dat$length_value, na.rm = TRUE)),
+          intercept_free = NA_real_,
+          slope_free = NA_real_,
+          slope_zero = NA_real_,
+          rmse_free = NA_real_,
+          rmse_zero = NA_real_,
+          rmse_ratio_zero_vs_free = NA_real_,
+          verdict = "nicht beurteilbar"
+        )
+        next
+      }
+
+      lm_free <- lm(mean_rt ~ length_value, data = cell_dat)
+      lm_zero <- lm(mean_rt ~ 0 + length_value, data = cell_dat)
+
+      pred_free <- predict(lm_free, newdata = cell_dat)
+      pred_zero <- predict(lm_zero, newdata = cell_dat)
+
+      cf_free <- coef(lm_free)
+      cf_zero <- coef(lm_zero)
+
+      intercept_free <- if ("(Intercept)" %in% names(cf_free)) unname(cf_free["(Intercept)"]) else NA_real_
+      slope_free <- if ("length_value" %in% names(cf_free)) unname(cf_free["length_value"]) else NA_real_
+      slope_zero <- if (length(cf_zero) >= 1) unname(cf_zero[1]) else NA_real_
+
+      rmse_free <- rmse_vec(cell_dat$mean_rt, pred_free)
+      rmse_zero <- rmse_vec(cell_dat$mean_rt, pred_zero)
+      rmse_ratio_zero_vs_free <- rmse_zero / rmse_free
+
+      verdict_now <- classify_origin_check(rmse_ratio_zero_vs_free)
+
+      out_rows[[length(out_rows) + 1]] <- tibble(
+        exp = exp_name,
+        AOI = as.character(aoi_now),
+        rt = rt,
+        length_var = length_var,
+        n_obs = nrow(dat),
+        n_cells = n_cells,
+        n_distinct_length_cells = n_distinct_length_cells,
+        min_length = suppressWarnings(min(dat$length_value, na.rm = TRUE)),
+        max_length = suppressWarnings(max(dat$length_value, na.rm = TRUE)),
+        intercept_free = intercept_free,
+        slope_free = slope_free,
+        slope_zero = slope_zero,
+        rmse_free = rmse_free,
+        rmse_zero = rmse_zero,
+        rmse_ratio_zero_vs_free = rmse_ratio_zero_vs_free,
+        verdict = verdict_now
+      )
+    }
+  }
+
+  detail_table <- bind_rows(out_rows) %>%
+    arrange(exp, AOI) %>%
+    round_df_4()
+
+  summary_table <- detail_table %>%
+    group_by(length_var) %>%
+    summarise(
+      n_AOI = n(),
+      n_beurteilbar = sum(!is.na(rmse_ratio_zero_vs_free), na.rm = TRUE),
+      n_ursprung_plausibel = sum(verdict == "Ursprung plausibel", na.rm = TRUE),
+      n_grenzwertig = sum(verdict == "grenzwertig", na.rm = TRUE),
+      n_gegen_normierung = sum(verdict == "spricht gegen Normierung", na.rm = TRUE),
+      n_nicht_beurteilbar = sum(verdict == "nicht beurteilbar", na.rm = TRUE),
+      share_ursprung_plausibel_among_beurteilbar =
+        ifelse(n_beurteilbar > 0, n_ursprung_plausibel / n_beurteilbar, NA_real_),
+      mean_rmse_ratio_zero_vs_free = mean(rmse_ratio_zero_vs_free, na.rm = TRUE),
+      median_rmse_ratio_zero_vs_free = median(rmse_ratio_zero_vs_free, na.rm = TRUE),
+      mean_abs_intercept_free = mean(abs(intercept_free), na.rm = TRUE),
+      .groups = "drop"
+    ) %>%
+    round_df_4()
+
+  list(
+    detail_table = detail_table,
+    summary_table = summary_table
+  )
+}
+
+# =========================================================
+# AUSFÜHREN
+# beide Längenvariablen in einem Schritt
+# =========================================================
+
+norm_origin_results <- purrr::map(
+  c("nWords", "nLetters"),
+  ~ run_norm_check_origin(
+    datas = dfs_norm_origin,
+    rt = "FRT",
+    length_var = .x
+  )
+)
+
+names(norm_origin_results) <- c("nWords", "nLetters")
+
+# =========================================================
+# GEMEINSAME OUTPUTS
+# =========================================================
+
+norm_origin_detail_table <- dplyr::bind_rows(
+  norm_origin_results$nWords$detail_table,
+  norm_origin_results$nLetters$detail_table
+) %>%
+  dplyr::arrange(length_var, exp, AOI)
+
+norm_origin_summary_table <- dplyr::bind_rows(
+  norm_origin_results$nWords$summary_table,
+  norm_origin_results$nLetters$summary_table
+) %>%
+  dplyr::arrange(length_var)
+
+# Haupttabellen
+norm_origin_detail_table
+norm_origin_summary_table
+
+# AOIs, bei denen Ursprung grob plausibel ist
+#norm_origin_detail_table %>%
+#  dplyr::filter(verdict == "Ursprung plausibel")
+
+# AOIs, bei denen das gegen Normierung spricht
+#norm_origin_detail_table %>%
+#  dplyr::filter(verdict == "spricht gegen Normierung")
+
+# nicht beurteilbare AOIs
+#norm_origin_detail_table %>%
+#  dplyr::filter(verdict == "nicht beurteilbar")
+```
+Methodik
+Zur Beurteilung der Normierung wurde für jede AOI auf der Originalskala geprüft, ob die mittlere Lesezeit näherungsweise proportional zur jeweiligen Längenvariable verläuft und ob eine Gerade durch den Ursprung dafür ausreicht. Dazu wurden auf Zellebene, also aggregiert über Topic × condition und, falls vorhanden, zusätzlich speaker, zwei lineare Modelle verglichen: ein freies Modell mit Intercept und Steigung sowie ein auf den Ursprung beschränktes Modell. Als zentrale Heuristik diente das Verhältnis der Fitfehler beider Modelle, rmse_ratio_zero_vs_free = RMSE_zero / RMSE_free. Werte bis 1.05 wurden als „Ursprung plausibel“, Werte über 1.05 bis 1.15 als „grenzwertig“ und Werte über 1.15 als „spricht gegen Normierung“ eingeordnet. Zusätzlich wurde der freie Intercept betrachtet, weil ein großer Intercept gegen eine saubere Proportionalitätsannahme durch den Ursprung spricht.
+
+Ergebniss: 
+Für nLetters waren alle 22 AOIs beurteilbar. Davon wurden 6 AOIs, also 27.3%, als mit dem Ursprung vereinbar eingestuft, 4 AOIs als grenzwertig und 12 AOIs, also mehr als die Hälfte, als gegen die Normierung sprechend. Auch die mittlere RMSE-Ratio von 1.3008 und der Median von 1.2030 zeigen, dass das Ursprungsmodell im Mittel deutlich schlechter passte als das freie Modell. Für nWords waren nur 16 von 22 AOIs beurteilbar, 6 AOIs waren nicht beurteilbar. Unter den beurteilbaren AOIs wurden ebenfalls 6 AOIs als plausibel eingestuft, entsprechend 37.5%, 6 als grenzwertig und 4 als gegen die Normierung sprechend. Die mittlere RMSE-Ratio von 1.1215 und der Median von 1.1038 fallen günstiger aus als bei nLetters. Insgesamt ergibt sich damit für diesen ersten Check ein gemischtes Bild, wobei nWords relativ besser abschneidet als nLetters, die proportionale Annahme durch den Ursprung aber auch für nWords nicht durchgängig gestützt wird.
+
+Normierung 2
+```{r}
+library(dplyr)
+library(purrr)
+library(tibble)
+library(glmmTMB)
+
+# =========================================================
+# DATEN
+# Erwartet vorhandene Objekte:
+# c_bed, c_ein, n_bed, n_ein, CS
+# =========================================================
+
+dfs_norm_beta0 <- list(
+  c_bed = c_bed,
+  c_ein = c_ein,
+  n_bed = n_bed,
+  n_ein = n_ein,
+  CS    = CS
+)
+
+# =========================================================
+# HILFSFUNKTIONEN
+# =========================================================
+
+round_df_4 <- function(df) {
+  df %>%
+    mutate(across(where(is.numeric), ~ round(.x, 4)))
+}
+
+fixed_part_raw <- function(exp_name) {
+  has_speaker_interaction <- exp_name %in% c("n_bed", "n_ein", "CS")
+  if (has_speaker_interaction) "condition * speaker" else "condition"
+}
+
+safe_gamma_fit <- function(formula, data) {
+  warn_msgs <- character()
+  info_msgs <- character()
+  err_msg <- NA_character_
+  fit <- NULL
+
+  fit <- tryCatch(
+    withCallingHandlers(
+      {
+        glmmTMB::glmmTMB(
+          formula = formula,
+          data = data,
+          family = Gamma(link = "log")
+        )
+      },
+      warning = function(w) {
+        warn_msgs <<- c(warn_msgs, conditionMessage(w))
+        invokeRestart("muffleWarning")
+      },
+      message = function(m) {
+        info_msgs <<- c(info_msgs, conditionMessage(m))
+        invokeRestart("muffleMessage")
+      }
+    ),
+    error = function(e) {
+      err_msg <<- conditionMessage(e)
+      NULL
+    }
+  )
+
+  list(
+    fit = fit,
+    fit_ok = !is.null(fit),
+    warning_text = paste(unique(warn_msgs), collapse = " | "),
+    message_text = paste(unique(info_msgs), collapse = " | "),
+    error_text = err_msg
+  )
+}
+
+collect_data_info <- function(dat) {
+  tibble(
+    n_obs = nrow(dat),
+    n_topics = dplyr::n_distinct(dat$Topic),
+    n_participants = dplyr::n_distinct(dat$Participant),
+    n_conditions = dplyr::n_distinct(dat$condition),
+    n_distinct_length = dplyr::n_distinct(dat$length_value),
+    n_distinct_log_length = dplyr::n_distinct(dat$log_length),
+    min_length = suppressWarnings(min(dat$length_value, na.rm = TRUE)),
+    max_length = suppressWarnings(max(dat$length_value, na.rm = TRUE)),
+    min_info_flag = (
+      nrow(dat) < 10 ||
+      dplyr::n_distinct(dat$Topic) < 2 ||
+      dplyr::n_distinct(dat$Participant) < 2 ||
+      dplyr::n_distinct(dat$condition) < 2 ||
+      dplyr::n_distinct(dat$length_value) < 2
+    )
+  )
+}
+
+extract_loglength_beta0_test <- function(fit_obj, dat) {
+  if (dplyr::n_distinct(dat$log_length) < 2) {
+    return(tibble(
+      term_estimable = FALSE,
+      log_length_estimate = NA_real_,
+      log_length_se = NA_real_,
+      log_length_ci_lower_95 = NA_real_,
+      log_length_ci_upper_95 = NA_real_,
+      z_test_beta_eq_0 = NA_real_,
+      p_value_beta_eq_0 = NA_real_,
+      ci_contains_0 = NA,
+      abs_distance_to_0 = NA_real_
+    ))
+  }
+
+  if (is.null(fit_obj)) {
+    return(tibble(
+      term_estimable = FALSE,
+      log_length_estimate = NA_real_,
+      log_length_se = NA_real_,
+      log_length_ci_lower_95 = NA_real_,
+      log_length_ci_upper_95 = NA_real_,
+      z_test_beta_eq_0 = NA_real_,
+      p_value_beta_eq_0 = NA_real_,
+      ci_contains_0 = NA,
+      abs_distance_to_0 = NA_real_
+    ))
+  }
+
+  cc <- tryCatch(summary(fit_obj)$coefficients$cond, error = function(e) NULL)
+
+  if (is.null(cc) || !("log_length" %in% rownames(cc))) {
+    return(tibble(
+      term_estimable = FALSE,
+      log_length_estimate = NA_real_,
+      log_length_se = NA_real_,
+      log_length_ci_lower_95 = NA_real_,
+      log_length_ci_upper_95 = NA_real_,
+      z_test_beta_eq_0 = NA_real_,
+      p_value_beta_eq_0 = NA_real_,
+      ci_contains_0 = NA,
+      abs_distance_to_0 = NA_real_
+    ))
+  }
+
+  est <- unname(cc["log_length", "Estimate"])
+  se  <- unname(cc["log_length", "Std. Error"])
+
+  if (!is.finite(est) || !is.finite(se) || se <= 0) {
+    return(tibble(
+      term_estimable = FALSE,
+      log_length_estimate = NA_real_,
+      log_length_se = NA_real_,
+      log_length_ci_lower_95 = NA_real_,
+      log_length_ci_upper_95 = NA_real_,
+      z_test_beta_eq_0 = NA_real_,
+      p_value_beta_eq_0 = NA_real_,
+      ci_contains_0 = NA,
+      abs_distance_to_0 = NA_real_
+    ))
+  }
+
+  ci_low <- est - 1.96 * se
+  ci_up  <- est + 1.96 * se
+
+  z_val <- est / se
+  p_val <- 2 * stats::pnorm(abs(z_val), lower.tail = FALSE)
+
+  tibble(
+    term_estimable = TRUE,
+    log_length_estimate = est,
+    log_length_se = se,
+    log_length_ci_lower_95 = ci_low,
+    log_length_ci_upper_95 = ci_up,
+    z_test_beta_eq_0 = z_val,
+    p_value_beta_eq_0 = p_val,
+    ci_contains_0 = (ci_low <= 0 && 0 <= ci_up),
+    abs_distance_to_0 = abs(est)
+  )
+}
+
+# =========================================================
+# CHECK 2 FÜR NORMIERUNG:
+# Bleibt nach Normierung noch ein Längeneffekt?
+# =========================================================
+
+run_norm_check_beta0 <- function(datas,
+                                 rt = "FRT",
+                                 length_var = "nWords") {
+  stopifnot(length_var %in% c("nWords", "nLetters"))
+
+  out_rows <- list()
+
+  for (exp_name in names(datas)) {
+    df_exp <- datas[[exp_name]]
+
+    for (aoi_now in sort(unique(df_exp$AOI))) {
+      dat <- df_exp %>%
+        filter(AOI == aoi_now) %>%
+        mutate(
+          condition = factor(condition),
+          Topic = factor(Topic),
+          Participant = factor(Participant)
+        ) %>%
+        filter(
+          !is.na(.data[[rt]]),
+          .data[[rt]] > 0,
+          !is.na(.data[[length_var]]),
+          .data[[length_var]] > 0
+        ) %>%
+        mutate(
+          rt_raw = .data[[rt]],
+          length_value = .data[[length_var]],
+          rt_norm = rt_raw / length_value,
+          log_length = log(length_value)
+        )
+
+      if (exp_name %in% c("n_bed", "n_ein", "CS")) {
+        dat <- dat %>%
+          mutate(speaker = factor(speaker)) %>%
+          filter(!is.na(speaker))
+      }
+
+      info_row <- collect_data_info(dat)
+      fixed_raw <- fixed_part_raw(exp_name)
+
+      free_formula <- stats::as.formula(
+        paste0(
+          "rt_norm ~ ",
+          fixed_raw,
+          " + log_length + (1 | Topic) + (1 | Participant)"
+        )
+      )
+
+      fit_free <- safe_gamma_fit(
+        formula = free_formula,
+        data = dat
+      )
+
+      beta0_test <- extract_loglength_beta0_test(
+        fit_obj = fit_free$fit,
+        dat = dat
+      )
+
+      out_rows[[length(out_rows) + 1]] <- bind_cols(
+        tibble(
+          exp = exp_name,
+          AOI = as.character(aoi_now),
+          rt = rt,
+          length_var = length_var
+        ),
+        info_row,
+        tibble(
+          fit_ok_free = fit_free$fit_ok
+        ),
+        beta0_test,
+        tibble(
+          warning_text_free = ifelse(nchar(fit_free$warning_text) == 0, NA_character_, fit_free$warning_text),
+          message_text_free = ifelse(nchar(fit_free$message_text) == 0, NA_character_, fit_free$message_text),
+          error_text_free = fit_free$error_text
+        )
+      )
+    }
+  }
+
+  detail_table <- bind_rows(out_rows) %>%
+    arrange(exp, AOI) %>%
+    round_df_4()
+
+  summary_table <- detail_table %>%
+    group_by(length_var) %>%
+    summarise(
+      n_AOI = n(),
+      n_fit_ok = sum(fit_ok_free %in% TRUE, na.rm = TRUE),
+      n_estimable = sum(term_estimable %in% TRUE, na.rm = TRUE),
+      n_not_estimable = sum(term_estimable %in% FALSE, na.rm = TRUE),
+      n_ci_contains_0 = sum(ci_contains_0 %in% TRUE, na.rm = TRUE),
+      share_ci_contains_0_among_estimable =
+        ifelse(n_estimable > 0, n_ci_contains_0 / n_estimable, NA_real_),
+      mean_log_length_estimate = mean(log_length_estimate, na.rm = TRUE),
+      median_log_length_estimate = median(log_length_estimate, na.rm = TRUE),
+      mean_abs_distance_to_0 = mean(abs_distance_to_0, na.rm = TRUE),
+      .groups = "drop"
+    ) %>%
+    round_df_4()
+
+  list(
+    detail_table = detail_table,
+    summary_table = summary_table
+  )
+}
+
+# =========================================================
+# AUSFÜHREN
+# beide Längenvariablen in einem Schritt
+# =========================================================
+
+norm_beta0_results <- purrr::map(
+  c("nWords", "nLetters"),
+  ~ run_norm_check_beta0(
+    datas = dfs_norm_beta0,
+    rt = "FRT",
+    length_var = .x
+  )
+)
+
+names(norm_beta0_results) <- c("nWords", "nLetters")
+
+# =========================================================
+# GEMEINSAME OUTPUTS
+# =========================================================
+
+norm_beta0_detail_table <- dplyr::bind_rows(
+  norm_beta0_results$nWords$detail_table,
+  norm_beta0_results$nLetters$detail_table
+) %>%
+  dplyr::arrange(length_var, exp, AOI)
+
+norm_beta0_summary_table <- dplyr::bind_rows(
+  norm_beta0_results$nWords$summary_table,
+  norm_beta0_results$nLetters$summary_table
+) %>%
+  dplyr::arrange(length_var)
+
+# Haupttabellen
+norm_beta0_detail_table
+norm_beta0_summary_table
+
+# AOIs, bei denen nach Normierung kein klarer Restlängeneffekt bleibt
+#norm_beta0_detail_table %>%
+#  dplyr::filter(
+#    fit_ok_free %in% TRUE,
+#    term_estimable %in% TRUE,
+#    ci_contains_0 %in% TRUE
+#  )
+
+# AOIs, bei denen nach Normierung weiter ein Längeneffekt bleibt
+#norm_beta0_detail_table %>%
+#  dplyr::filter(
+#    fit_ok_free %in% TRUE,
+#    term_estimable %in% TRUE,
+#    ci_contains_0 %in% FALSE
+#  )
+
+# nicht beurteilbare AOIs
+#norm_beta0_detail_table %>%
+#  dplyr::filter(
+#    !fit_ok_free | term_estimable %in% FALSE
+#  )
+```
+Methodik
+Im zweiten Check wurde geprüft, ob nach der Normierung noch ein zusätzlicher Längeneffekt bestehen bleibt. Dazu wurde für jede AOI ein Gamma-Modell mit Log-Link für die normierte Zielvariable  rt_norm=rt/length geschätzt, wobei condition und, falls relevant, speaker sowie Random Intercepts für Topic und Participant berücksichtigt wurden. Zusätzlich wurde log_length als 
+fester Effekt in das Modell aufgenommen. Die entscheidende Idee ist: Wenn die Normierung sauber wäre, sollte log_length nach 
+der Division keinen systematischen zusätzlichen Beitrag mehr leisten. Als Heuristik wurde deshalb geprüft, ob das 95%-Konfidenzintervall des Koeffizienten für log_length die 0 enthält. Enthält das Intervall die 0, spricht das gegen einen klaren Restlängeneffekt und damit eher für eine gelungene Normierung. Enthält es die 0 nicht, bleibt nach der Normierung noch systematische Längeninformation bestehen. Zusätzlich wurden Schätzbarkeit des Terms und die absolute Distanz des Koeffizienten 
+zu 0 betrachtet.
+
+Ergebnis
+
+Für nLetters konnten in allen 22 AOIs Modelle geschätzt werden, und der Term log_length war in allen 22 AOIs estimierbar. Allerdings enthielt das 95%-Konfidenzintervall nur in 8 von 22 AOIs, also in 36.4%, die 0. In der Mehrzahl der AOIs blieb 
+damit trotz Normierung ein klarer Restlängeneffekt bestehen. Für nWords liefen ebenfalls in allen 22 AOIs die Modellfits, aber log_length war nur in 15 AOIs estimierbar, in 7 AOIs also nicht separat beurteilbar. Von den 15 estimierbaren AOIs enthielten 
+8, also 53.3%, ein Konfidenzintervall mit 0. Relativ betrachtet schneidet nWords in diesem Check damit günstiger ab als 
+nLetters, weil unter den beurteilbaren AOIs häufiger kein klarer Restlängeneffekt nachweisbar war. Gleichzeitig ist das Bild
+auch für nWords nicht überzeugend sauber, da selbst dort in fast der Hälfte der estimierbaren AOIs weiterhin ein systematischer Längeneffekt verbleibt. Insgesamt spricht dieser Check daher gegen eine durchgängig gelungene proportionale Normierung, wobei nWords hier eher günstiger wirkt als nLetters.
+
+
+Normierung 3
+```{r}
+library(dplyr)
+library(purrr)
+library(tibble)
+library(glmmTMB)
+
+# =========================================================
+# DATEN
+# Erwartet vorhandene Objekte:
+# c_bed, c_ein, n_bed, n_ein, CS
+# =========================================================
+
+dfs_norm_aic <- list(
+  c_bed = c_bed,
+  c_ein = c_ein,
+  n_bed = n_bed,
+  n_ein = n_ein,
+  CS    = CS
+)
+
+# =========================================================
+# HILFSFUNKTIONEN
+# =========================================================
+
+round_df_4 <- function(df) {
+  df %>%
+    dplyr::mutate(
+      dplyr::across(where(is.numeric), ~ round(.x, 4))
+    )
+}
+
+fixed_part_raw <- function(exp_name) {
+  has_speaker_interaction <- exp_name %in% c("n_bed", "n_ein", "CS")
+  if (has_speaker_interaction) "condition * speaker" else "condition"
+}
+
+safe_gamma_fit <- function(formula, data) {
+  warn_msgs <- character()
+  info_msgs <- character()
+  err_msg <- NA_character_
+  fit <- NULL
+
+  fit <- tryCatch(
+    withCallingHandlers(
+      {
+        glmmTMB::glmmTMB(
+          formula = formula,
+          data = data,
+          family = Gamma(link = "log")
+        )
+      },
+      warning = function(w) {
+        warn_msgs <<- c(warn_msgs, conditionMessage(w))
+        invokeRestart("muffleWarning")
+      },
+      message = function(m) {
+        info_msgs <<- c(info_msgs, conditionMessage(m))
+        invokeRestart("muffleMessage")
+      }
+    ),
+    error = function(e) {
+      err_msg <<- conditionMessage(e)
+      NULL
+    }
+  )
+
+  list(
+    fit = fit,
+    fit_ok = !is.null(fit),
+    warning_text = paste(unique(warn_msgs), collapse = " | "),
+    message_text = paste(unique(info_msgs), collapse = " | "),
+    error_text = err_msg
+  )
+}
+
+collect_data_info <- function(dat) {
+  tibble(
+    n_obs = nrow(dat),
+    n_topics = dplyr::n_distinct(dat$Topic),
+    n_participants = dplyr::n_distinct(dat$Participant),
+    n_conditions = dplyr::n_distinct(dat$condition),
+    n_distinct_length = dplyr::n_distinct(dat$length_value),
+    min_length = suppressWarnings(min(dat$length_value, na.rm = TRUE)),
+    max_length = suppressWarnings(max(dat$length_value, na.rm = TRUE)),
+    min_info_flag = (
+      nrow(dat) < 10 ||
+      dplyr::n_distinct(dat$Topic) < 2 ||
+      dplyr::n_distinct(dat$Participant) < 2 ||
+      dplyr::n_distinct(dat$condition) < 2 ||
+      dplyr::n_distinct(dat$length_value) < 2
+    )
+  )
+}
+
+classify_delta_aic_sign <- function(delta_aic) {
+  if (is.na(delta_aic)) {
+    return("nicht beurteilbar")
+  }
+  if (delta_aic < 0) {
+    return("reduziertes Modell besser")
+  }
+  if (delta_aic > 0) {
+    return("freies Modell besser")
+  }
+  "kein Unterschied"
+}
+
+# =========================================================
+# CHECK 3 MIT AIC:
+# Modell mit und ohne length_value vergleichen
+#
+# delta_AIC_reduced_minus_free = AIC(reduced) - AIC(free)
+#
+# < 0  -> reduziertes Modell besser
+# = 0  -> kein Unterschied
+# > 0  -> freies Modell besser
+# =========================================================
+
+run_norm_check_delta_aic_sign <- function(datas,
+                                          rt = "FRT",
+                                          length_var = "nWords") {
+  stopifnot(length_var %in% c("nWords", "nLetters"))
+
+  out_rows <- list()
+
+  for (exp_name in names(datas)) {
+    df_exp <- datas[[exp_name]]
+
+    for (aoi_now in sort(unique(df_exp$AOI))) {
+      dat <- df_exp %>%
+        dplyr::filter(AOI == aoi_now) %>%
+        dplyr::mutate(
+          condition = factor(condition),
+          Topic = factor(Topic),
+          Participant = factor(Participant)
+        ) %>%
+        dplyr::filter(
+          !is.na(.data[[rt]]),
+          .data[[rt]] > 0,
+          !is.na(.data[[length_var]]),
+          .data[[length_var]] > 0
+        ) %>%
+        dplyr::mutate(
+          rt_raw = .data[[rt]],
+          length_value = .data[[length_var]],
+          rt_norm = rt_raw / length_value
+        )
+
+      if (exp_name %in% c("n_bed", "n_ein", "CS")) {
+        dat <- dat %>%
+          dplyr::mutate(speaker = factor(speaker)) %>%
+          dplyr::filter(!is.na(speaker))
+      }
+
+      info_row <- collect_data_info(dat)
+      fixed_raw <- fixed_part_raw(exp_name)
+
+      free_formula <- stats::as.formula(
+        paste0(
+          "rt_norm ~ ",
+          fixed_raw,
+          " + length_value + (1 | Topic) + (1 | Participant)"
+        )
+      )
+
+      reduced_formula <- stats::as.formula(
+        paste0(
+          "rt_norm ~ ",
+          fixed_raw,
+          " + (1 | Topic) + (1 | Participant)"
+        )
+      )
+
+      fit_free <- safe_gamma_fit(
+        formula = free_formula,
+        data = dat
+      )
+
+      fit_reduced <- safe_gamma_fit(
+        formula = reduced_formula,
+        data = dat
+      )
+
+      free_length_dropped <- grepl(
+        "dropping columns from rank-deficient conditional model: length_value",
+        ifelse(is.na(fit_free$message_text), "", fit_free$message_text),
+        fixed = TRUE
+      )
+
+      comparable_for_check3 <-
+        fit_free$fit_ok &&
+        fit_reduced$fit_ok &&
+        dplyr::n_distinct(dat$length_value) >= 2 &&
+        !free_length_dropped
+
+      aic_free <- tryCatch(
+        if (!is.null(fit_free$fit)) AIC(fit_free$fit) else NA_real_,
+        error = function(e) NA_real_
+      )
+
+      aic_reduced <- tryCatch(
+        if (!is.null(fit_reduced$fit)) AIC(fit_reduced$fit) else NA_real_,
+        error = function(e) NA_real_
+      )
+
+      delta_aic <- if (
+        comparable_for_check3 &&
+        is.finite(aic_free) &&
+        is.finite(aic_reduced)
+      ) {
+        aic_reduced - aic_free
+      } else {
+        NA_real_
+      }
+
+      verdict_now <- classify_delta_aic_sign(delta_aic)
+
+      out_rows[[length(out_rows) + 1]] <- dplyr::bind_cols(
+        tibble(
+          exp = exp_name,
+          AOI = as.character(aoi_now),
+          rt = rt,
+          length_var = length_var
+        ),
+        info_row,
+        tibble(
+          fit_ok_free = fit_free$fit_ok,
+          fit_ok_reduced = fit_reduced$fit_ok,
+          free_length_dropped = free_length_dropped,
+          comparable_for_check3 = comparable_for_check3,
+          aic_free = aic_free,
+          aic_reduced = aic_reduced,
+          delta_AIC_reduced_minus_free = delta_aic,
+          verdict = verdict_now,
+          warning_text_free = ifelse(nchar(fit_free$warning_text) == 0, NA_character_, fit_free$warning_text),
+          message_text_free = ifelse(nchar(fit_free$message_text) == 0, NA_character_, fit_free$message_text),
+          error_text_free = fit_free$error_text,
+          warning_text_reduced = ifelse(nchar(fit_reduced$warning_text) == 0, NA_character_, fit_reduced$warning_text),
+          message_text_reduced = ifelse(nchar(fit_reduced$message_text) == 0, NA_character_, fit_reduced$message_text),
+          error_text_reduced = fit_reduced$error_text
+        )
+      )
+    }
+  }
+
+  detail_table <- dplyr::bind_rows(out_rows) %>%
+    dplyr::arrange(exp, AOI) %>%
+    round_df_4()
+
+  summary_table <- detail_table %>%
+    dplyr::group_by(length_var) %>%
+    dplyr::summarise(
+      n_AOI = dplyr::n(),
+      n_comparable = sum(comparable_for_check3 %in% TRUE, na.rm = TRUE),
+      n_delta_negative = sum(delta_AIC_reduced_minus_free < 0, na.rm = TRUE),
+      n_delta_zero = sum(delta_AIC_reduced_minus_free == 0, na.rm = TRUE),
+      n_delta_positive = sum(delta_AIC_reduced_minus_free > 0, na.rm = TRUE),
+      share_delta_negative_among_comparable =
+        ifelse(n_comparable > 0, n_delta_negative / n_comparable, NA_real_),
+      share_delta_positive_among_comparable =
+        ifelse(n_comparable > 0, n_delta_positive / n_comparable, NA_real_),
+      mean_delta_AIC = mean(delta_AIC_reduced_minus_free, na.rm = TRUE),
+      median_delta_AIC = median(delta_AIC_reduced_minus_free, na.rm = TRUE),
+      .groups = "drop"
+    ) %>%
+    round_df_4()
+
+  list(
+    detail_table = detail_table,
+    summary_table = summary_table
+  )
+}
+
+# =========================================================
+# AUSFÜHREN
+# beide Längenvariablen in einem Schritt
+# =========================================================
+
+norm_delta_aic_results <- purrr::map(
+  c("nWords", "nLetters"),
+  ~ run_norm_check_delta_aic_sign(
+    datas = dfs_norm_aic,
+    rt = "FRT",
+    length_var = .x
+  )
+)
+
+names(norm_delta_aic_results) <- c("nWords", "nLetters")
+
+# =========================================================
+# GEMEINSAME OUTPUTS
+# =========================================================
+
+norm_delta_aic_detail_table <- dplyr::bind_rows(
+  norm_delta_aic_results$nWords$detail_table,
+  norm_delta_aic_results$nLetters$detail_table
+) %>%
+  dplyr::arrange(length_var, exp, AOI)
+
+norm_delta_aic_summary_table <- dplyr::bind_rows(
+  norm_delta_aic_results$nWords$summary_table,
+  norm_delta_aic_results$nLetters$summary_table
+) %>%
+  dplyr::arrange(length_var)
+
+norm_delta_aic_compare <- norm_delta_aic_detail_table %>%
+  dplyr::group_by(length_var) %>%
+  dplyr::summarise(
+    n_AOI = dplyr::n(),
+    n_comparable = sum(comparable_for_check3 %in% TRUE, na.rm = TRUE),
+    n_delta_negative = sum(delta_AIC_reduced_minus_free < 0, na.rm = TRUE),
+    n_delta_zero = sum(delta_AIC_reduced_minus_free == 0, na.rm = TRUE),
+    n_delta_positive = sum(delta_AIC_reduced_minus_free > 0, na.rm = TRUE),
+    share_delta_negative_among_comparable =
+      ifelse(n_comparable > 0, n_delta_negative / n_comparable, NA_real_),
+    share_delta_positive_among_comparable =
+      ifelse(n_comparable > 0, n_delta_positive / n_comparable, NA_real_),
+    mean_delta_AIC = mean(delta_AIC_reduced_minus_free, na.rm = TRUE),
+    median_delta_AIC = median(delta_AIC_reduced_minus_free, na.rm = TRUE),
+    .groups = "drop"
+  ) %>%
+  round_df_4()
+
+# =========================================================
+# OUTPUTS
+# =========================================================
+
+norm_delta_aic_detail_table
+norm_delta_aic_summary_table
+norm_delta_aic_compare
+
+# AOIs, bei denen das reduzierte Modell besser ist
+#norm_delta_aic_detail_table %>%
+#  dplyr::filter(
+#    comparable_for_check3 %in% TRUE,
+#    delta_AIC_reduced_minus_free < 0
+#  )
+
+# AOIs ohne Unterschied
+#norm_delta_aic_detail_table %>%
+#  dplyr::filter(
+#    comparable_for_check3 %in% TRUE,
+#    delta_AIC_reduced_minus_free == 0
+#  )
+
+# AOIs, bei denen das freie Modell besser ist
+#norm_delta_aic_detail_table %>%
+#  dplyr::filter(
+#    comparable_for_check3 %in% TRUE,
+#    delta_AIC_reduced_minus_free > 0
+#  )
+```
+
+Methodik
+Im dritten Check wurde geprüft, ob die jeweilige Längenvariable nach der Normierung noch zusätzlichen Modellfit liefert. Dazu wurden für jede AOI zwei Gamma-Modelle mit Log-Link für die normierte Zielvariable 
+rtnorm=rt/lengthv erglichen: ein reduziertes Modell ohne zusätzlichen Längenterm und ein freies Modell mit zusätzlichem 
+linearem Term für length_value. Die übrige Modellstruktur blieb identisch und umfasste condition, gegebenenfalls speaker sowie Random Intercepts für Topic und Participant. Für den Vergleich wurde  ΔAIC=AIC(reduced)−AIC(free) berechnet. Negative Werte bedeuten, dass das reduzierte Modell bevorzugt wird, also der zusätzliche Längenterm nach der Normierung keinen ausreichenden Mehrwert liefert. Positive Werte bedeuten dagegen, dass das freie Modell besser passt, sodass nach der Normierung weiterhin relevante Längeninformation im Modell verbleibt. Die Auswertung erfolgte hier primär über das Vorzeichen von 
+ΔAIC, ergänzt durch Mittelwert und Median der Differenzen.
+
+Ergebnis
+Für nLetters waren alle 22 AOIs vergleichbar. Davon zeigten nur 5 AOIs, also 22.7%, einen negativen 
+ΔAIC-Wert, während 17 AOIs, also 77.3%, einen positiven Wert aufwiesen. Damit sprach in der deutlichen Mehrzahl der AOIs das freie Modell mit zusätzlichem Längenterm für einen besseren Fit, was gegen eine saubere Normierung mit nLetters spricht. Dieses Bild wird durch den mittleren  ΔAIC-Wert von 6.4282 und den Median von 2.6124 zusätzlich gestützt, die beide im positiven 
+Bereich liegen und auf einen systematischen Restlängeneffekt nach der Normierung hindeuten. Für nWords waren 15 von 22 AOIs vergleichbar. Von diesen 15 AOIs zeigten 7, also 46.7%, einen negativen  AIC-Wert und 8 AOIs, also 53.3%, einen positiven Wert. Das Ergebnis fällt damit deutlich gemischter aus als bei nLetters. Zugleich sind der mittlere  ΔAIC-Wert von 1.1961 und der Median von 0.1045 nur leicht positiv, sodass der zusätzliche 
+Längenterm bei nWords im Durchschnitt nur einen geringen Zusatzfit liefert. Insgesamt spricht dieser Check klarer gegen 
+nLetters als gegen nWords. Auch für nWords bleibt das Bild nicht vollständig überzeugend, nWords schneidet jedoch deutlich günstiger ab als nLetters und erscheint damit als die geeignetere Normierungsbasis.
+
+
+
+Fazit: Während beide Normierungen nicht tragen, ist die verletzung der Annahmen welche wir haben 
+

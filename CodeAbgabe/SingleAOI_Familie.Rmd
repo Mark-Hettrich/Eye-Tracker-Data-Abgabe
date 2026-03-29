@@ -1,0 +1,5392 @@
+---
+title: "SingleAOI_Familie"
+output: html_document
+---
+
+Wir schauen zuerst, ob Poisson Overdispersed ist, und entscheiden dann zwischen NegBin1 und 2 direkt.
+Das hilft uns die restliche analyse kompakter zu halten. 
+
+```{r}
+library(here)
+library(dplyr)
+library(tidyr)
+library(purrr)
+library(tibble)
+library(ggplot2)
+library(lme4)
+library(mgcv)
+```
+
+
+```{r}
+c_bed <- readRDS(here("prepped Data", "C_bed.rds"))
+c_ein <- readRDS(here("prepped Data", "C_ein.rds"))
+n_bed <- readRDS(here("prepped Data", "N_bed.rds"))
+n_ein <- readRDS(here("prepped Data", "N_ein.rds"))
+CS      <- readRDS(here("prepped Data", "CS.rds"))
+INC <- readRDS(here("prepped Data", "INC.rds"))
+```
+
+```{r}
+c_bed <- c_bed %>% dplyr::filter(!is.na(FRT), FRT > 0)
+c_ein <- c_ein %>% dplyr::filter(!is.na(FRT), FRT > 0)
+n_bed <- n_bed %>% dplyr::filter(!is.na(FRT), FRT > 0)
+n_ein <- n_ein %>% dplyr::filter(!is.na(FRT), FRT > 0)
+CS    <- CS    %>% dplyr::filter(!is.na(FRT), FRT > 0)
+```
+
+Incluso wird als Tie Breaker verwendet sofern nötig. Grund: Er folgt anderer Struktur als gewöhnlich.
+
+
+
+Is Poisson Overdispersed?
+```{r}
+library(dplyr)
+library(purrr)
+library(glmmTMB)
+library(performance)
+
+dfs <- list(
+  c_bed = c_bed,
+  c_ein = c_ein,
+  n_bed = n_bed,
+  n_ein = n_ein,
+  CS    = CS
+)
+
+experiments_with_speaker <- c("n_bed", "n_ein", "CS")
+
+make_poisson_formula <- function(exp_name) {
+  if (exp_name %in% experiments_with_speaker) {
+    FRT ~ condition * speaker + nLetters + (1 | Participant) + (1 | Topic)
+  } else {
+    FRT ~ condition + nLetters + (1 | Participant) + (1 | Topic)
+  }
+}
+
+check_poisson_overdispersion <- function(dat, exp_name, aoi_value) {
+  dat_aoi <- dat %>%
+    filter(
+      AOI == aoi_value,
+      !is.na(FRT), FRT > 0,
+      !is.na(condition),
+      !is.na(nLetters),
+      !is.na(Participant),
+      !is.na(Topic)
+    ) %>%
+    mutate(
+      Participant = factor(Participant),
+      Topic = factor(Topic),
+      condition = factor(condition)
+    )
+
+  if (exp_name %in% experiments_with_speaker) {
+    dat_aoi <- dat_aoi %>%
+      filter(!is.na(speaker)) %>%
+      mutate(speaker = factor(speaker))
+  }
+
+  if (nrow(dat_aoi) < 20) {
+    return(tibble(
+      experiment = exp_name,
+      AOI = as.character(aoi_value),
+      n = nrow(dat_aoi),
+      dispersion_ratio = NA_real_,
+      chisq = NA_real_,
+      p_value = NA_real_,
+      overdispersed_0_05 = NA,
+      fit_ok = FALSE,
+      note = "too_few_rows"
+    ))
+  }
+
+  form <- make_poisson_formula(exp_name)
+
+  fit <- tryCatch(
+    suppressWarnings(
+      glmmTMB(
+        formula = form,
+        data = dat_aoi,
+        family = poisson(link = "log")
+      )
+    ),
+    error = function(e) e
+  )
+
+  if (inherits(fit, "error")) {
+    return(tibble(
+      experiment = exp_name,
+      AOI = as.character(aoi_value),
+      n = nrow(dat_aoi),
+      dispersion_ratio = NA_real_,
+      chisq = NA_real_,
+      p_value = NA_real_,
+      overdispersed_0_05 = NA,
+      fit_ok = FALSE,
+      note = fit$message
+    ))
+  }
+
+  od <- tryCatch(
+    performance::check_overdispersion(fit),
+    error = function(e) e
+  )
+
+  if (inherits(od, "error")) {
+    return(tibble(
+      experiment = exp_name,
+      AOI = as.character(aoi_value),
+      n = nrow(dat_aoi),
+      dispersion_ratio = NA_real_,
+      chisq = NA_real_,
+      p_value = NA_real_,
+      overdispersed_0_05 = NA,
+      fit_ok = FALSE,
+      note = od$message
+    ))
+  }
+
+  tibble(
+    experiment = exp_name,
+    AOI = as.character(aoi_value),
+    n = nrow(dat_aoi),
+    dispersion_ratio = unname(od$dispersion_ratio),
+    chisq = unname(od$chisq_statistic),
+    p_value = unname(od$p_value),
+    overdispersed_0_05 = unname(od$p_value) < 0.05,
+    fit_ok = TRUE,
+    note = NA_character_
+  )
+}
+
+poisson_overdisp_tbl <- bind_rows(
+  imap(dfs, function(dat, exp_name) {
+    aois <- sort(unique(dat$AOI))
+    map_dfr(aois, ~ check_poisson_overdispersion(dat, exp_name, .x))
+  })
+) %>%
+  arrange(experiment, AOI)
+
+poisson_overdisp_summary <- poisson_overdisp_tbl %>%
+  summarise(
+    n_total = n(),
+    n_fit_ok = sum(fit_ok, na.rm = TRUE),
+    n_over_0_05 = sum(overdispersed_0_05 %in% TRUE, na.rm = TRUE)
+  )
+
+poisson_overdisp_by_experiment <- poisson_overdisp_tbl %>%
+  group_by(experiment) %>%
+  summarise(
+    n_total = n(),
+    n_fit_ok = sum(fit_ok, na.rm = TRUE),
+    n_over_0_05 = sum(overdispersed_0_05 %in% TRUE, na.rm = TRUE),
+    .groups = "drop"
+  )
+
+poisson_overdisp_tbl
+poisson_overdisp_summary
+poisson_overdisp_by_experiment
+```
+Die Ergebnisse der Vorprüfung zeigen für alle untersuchten AOIs eine ausgeprägte Overdispersion der Poisson-Modelle. Die geschätzten Dispersionsverhältnisse lagen durchweg weit über dem unter einem adäquaten Poisson-Modell erwarteten Wert von 1, und alle zugehörigen Tests fielen hochsignifikant aus. Damit wird deutlich, dass die Varianz der beobachteten FRT-Werte systematisch größer ist als vom Poisson-Modell angenommen. Poisson-Modelle wurden daher für FRT nicht weiter als geeignete Kandidaten betrachtet. 
+
+NegBin1 vs NegBin2
+```{r}
+library(dplyr)
+library(purrr)
+library(glmmTMB)
+library(tibble)
+
+# =========================================================
+# INPUT
+# =========================================================
+dfs <- list(
+  c_bed = c_bed,
+  c_ein = c_ein,
+  n_bed = n_bed,
+  n_ein = n_ein,
+  CS    = CS
+)
+
+datasets_with_speaker_interaction <- c("n_bed", "n_ein", "CS")
+
+# =========================================================
+# HELPERS
+# =========================================================
+prep_dataset <- function(df, dataset_name) {
+  out <- df %>%
+    dplyr::filter(
+      !is.na(FRT),
+      FRT > 0,
+      !is.na(AOI),
+      !is.na(Participant),
+      !is.na(Topic),
+      !is.na(condition),
+      !is.na(nLetters)
+    ) %>%
+    dplyr::mutate(
+      Participant = factor(Participant),
+      Topic = factor(Topic),
+      AOI = factor(AOI),
+      condition = factor(condition)
+    )
+
+  if (dataset_name %in% datasets_with_speaker_interaction) {
+    out <- out %>%
+      dplyr::filter(!is.na(speaker)) %>%
+      dplyr::mutate(speaker = factor(speaker))
+  }
+
+  as.data.frame(out, stringsAsFactors = FALSE)
+}
+
+get_fixed_formula <- function(dataset_name) {
+  if (dataset_name %in% datasets_with_speaker_interaction) {
+    "condition * speaker + nLetters"
+  } else {
+    "condition + nLetters"
+  }
+}
+
+make_formula <- function(dataset_name) {
+  fixed_part <- get_fixed_formula(dataset_name)
+  as.formula(
+    paste0("FRT ~ ", fixed_part, " + (1 | Participant) + (1 | Topic)")
+  )
+}
+
+collapse_unique <- function(x) {
+  x <- unique(x[!is.na(x) & nzchar(x)])
+  if (length(x) == 0) NA_character_ else paste(x, collapse = " | ")
+}
+
+label_nb <- function(x) {
+  factor(
+    x,
+    levels = c("nbinom1", "nbinom2"),
+    labels = c("NegBin1", "NegBin2")
+  )
+}
+
+fit_nb_model <- function(dat, dataset_name, nb_type = c("nbinom1", "nbinom2")) {
+  nb_type <- match.arg(nb_type)
+
+  fam <- switch(
+    nb_type,
+    nbinom1 = nbinom1(link = "log"),
+    nbinom2 = nbinom2(link = "log")
+  )
+
+  glmmTMB(
+    formula = make_formula(dataset_name),
+    data = dat,
+    family = fam
+  )
+}
+
+extract_fit_info <- function(model, dataset_name, aoi_value, nb_type, warns, msgs) {
+  tibble(
+    dataset = dataset_name,
+    AOI = as.character(aoi_value),
+    nb_type = nb_type,
+    fit_ok = TRUE,
+    has_warning = !is.na(collapse_unique(warns)),
+    warning_message = collapse_unique(warns),
+    other_message = collapse_unique(msgs),
+    error_message = NA_character_,
+    nonposdef_hessian = tryCatch(!isTRUE(model$sdr$pdHess), error = function(e) NA),
+    nonzero_convergence = tryCatch(
+      {
+        conv <- model$fit$convergence
+        if (is.null(conv)) NA else conv != 0
+      },
+      error = function(e) NA
+    ),
+    convergence_code = tryCatch(
+      {
+        conv <- model$fit$convergence
+        if (is.null(conv)) NA_integer_ else as.integer(conv)
+      },
+      error = function(e) NA_integer_
+    ),
+    AIC = tryCatch(AIC(model), error = function(e) NA_real_),
+    n_obs = tryCatch(nobs(model), error = function(e) NA_integer_)
+  )
+}
+
+extract_fit_error <- function(dataset_name, aoi_value, nb_type, warns, msgs, err_msg) {
+  tibble(
+    dataset = dataset_name,
+    AOI = as.character(aoi_value),
+    nb_type = nb_type,
+    fit_ok = FALSE,
+    has_warning = !is.na(collapse_unique(warns)),
+    warning_message = collapse_unique(warns),
+    other_message = collapse_unique(msgs),
+    error_message = err_msg,
+    nonposdef_hessian = NA,
+    nonzero_convergence = NA,
+    convergence_code = NA_integer_,
+    AIC = NA_real_,
+    n_obs = NA_integer_
+  )
+}
+
+classify_fit_problem <- function(fit_ok,
+                                 nonposdef_hessian,
+                                 nonzero_convergence,
+                                 warning_message,
+                                 error_message) {
+  txt <- paste(c(warning_message, error_message), collapse = " | ")
+
+  dplyr::case_when(
+    !isTRUE(fit_ok) ~ "fit_error",
+    isTRUE(nonposdef_hessian) ~ "nonposdef_hessian",
+    isTRUE(nonzero_convergence) ~ "nonzero_convergence",
+    grepl("rank-deficient|dropping columns|dropp.*column", txt, ignore.case = TRUE) ~ "rank_deficiency_signal",
+    grepl("singular", txt, ignore.case = TRUE) ~ "singularity_signal",
+    !is.na(warning_message) ~ "warning_only",
+    TRUE ~ "none"
+  )
+}
+
+# =========================================================
+# RUN ALL
+# =========================================================
+fit_results_list_nb <- list()
+
+for (dataset_name in names(dfs)) {
+
+  dat <- prep_dataset(dfs[[dataset_name]], dataset_name)
+
+  for (aoi_value in levels(droplevels(dat$AOI))) {
+
+    dat_aoi <- dat %>% dplyr::filter(AOI == aoi_value)
+
+    for (nb_type in c("nbinom1", "nbinom2")) {
+
+      warns <- character(0)
+      msgs <- character(0)
+
+      mod <- withCallingHandlers(
+        tryCatch(
+          fit_nb_model(dat_aoi, dataset_name, nb_type),
+          error = function(e) e
+        ),
+        warning = function(w) {
+          warns <<- c(warns, conditionMessage(w))
+          invokeRestart("muffleWarning")
+        },
+        message = function(m) {
+          msgs <<- c(msgs, conditionMessage(m))
+          invokeRestart("muffleMessage")
+        }
+      )
+
+      key <- paste(dataset_name, aoi_value, nb_type, sep = "__")
+
+      if (inherits(mod, "error")) {
+        fit_results_list_nb[[key]] <- extract_fit_error(
+          dataset_name = dataset_name,
+          aoi_value = aoi_value,
+          nb_type = nb_type,
+          warns = warns,
+          msgs = msgs,
+          err_msg = mod$message
+        )
+      } else {
+        fit_results_list_nb[[key]] <- extract_fit_info(
+          model = mod,
+          dataset_name = dataset_name,
+          aoi_value = aoi_value,
+          nb_type = nb_type,
+          warns = warns,
+          msgs = msgs
+        )
+      }
+    }
+  }
+}
+
+# =========================================================
+# BASIS-TABELLE
+# =========================================================
+fit_table_nb <- bind_rows(fit_results_list_nb) %>%
+  mutate(
+    nb_family = label_nb(nb_type),
+    problem_type = classify_fit_problem(
+      fit_ok = fit_ok,
+      nonposdef_hessian = nonposdef_hessian,
+      nonzero_convergence = nonzero_convergence,
+      warning_message = warning_message,
+      error_message = error_message
+    )
+  ) %>%
+  arrange(dataset, AOI, nb_type)
+
+# =========================================================
+# AIC-TABELLE
+# =========================================================
+nb_aic_table <- fit_table_nb %>%
+  select(dataset, AOI, nb_type, nb_family, fit_ok, AIC) %>%
+  group_by(dataset, AOI) %>%
+  mutate(
+    best_AIC = ifelse(all(is.na(AIC)), NA_real_, min(AIC, na.rm = TRUE)),
+    delta_AIC = AIC - best_AIC,
+    aic_group = case_when(
+      is.na(delta_AIC) ~ NA_character_,
+      delta_AIC <= 2 ~ "best_or_close",
+      delta_AIC <= 6 ~ "some_support",
+      TRUE ~ "weak"
+    )
+  ) %>%
+  ungroup() %>%
+  arrange(dataset, AOI, delta_AIC)
+
+# =========================================================
+# WARNING-/FITPROBLEM-TABELLE
+# =========================================================
+nb_warning_table <- fit_table_nb %>%
+  select(
+    dataset, AOI, nb_type, nb_family,
+    fit_ok, has_warning, warning_message, error_message,
+    nonposdef_hessian, nonzero_convergence, convergence_code,
+    problem_type
+  ) %>%
+  arrange(dataset, AOI, nb_type)
+
+# =========================================================
+# SUMMARY-TABELLE
+# =========================================================
+nb_family_summary <- fit_table_nb %>%
+  group_by(nb_type) %>%
+  summarise(
+    n_cells = n(),
+    n_fit_ok = sum(fit_ok %in% TRUE, na.rm = TRUE),
+    n_fit_fail = sum(fit_ok %in% FALSE, na.rm = TRUE),
+    n_warning = sum(has_warning %in% TRUE, na.rm = TRUE),
+    n_nonposdef_hessian = sum(nonposdef_hessian %in% TRUE, na.rm = TRUE),
+    n_nonzero_convergence = sum(nonzero_convergence %in% TRUE, na.rm = TRUE),
+    mean_AIC = mean(AIC, na.rm = TRUE),
+    .groups = "drop"
+  ) %>%
+  arrange(mean_AIC)
+
+# =========================================================
+# OUTPUT
+# =========================================================
+nb_aic_table
+nb_warning_table
+nb_family_summary
+```
+NegBin1 hat warnings die NegBin2 nicht hat, außerdem hat NegBin2 bessere AIC werte. 
+
+Wir machen weiter mit nur NegBin2 im Family vergleich. 
+
+Full-Data Problems
+```{r}
+library(dplyr)
+library(tidyr)
+library(purrr)
+library(glmmTMB)
+library(lme4)
+library(tibble)
+
+# =========================================================
+# INPUT
+# =========================================================
+
+dfs <- list(
+  c_bed = c_bed,
+  c_ein = c_ein,
+  n_bed = n_bed,
+  n_ein = n_ein,
+  CS    = CS
+)
+
+experiments_with_speaker <- c("n_bed", "n_ein", "CS")
+
+# =========================================================
+# HELFER
+# =========================================================
+
+safe_plain_df <- function(df) {
+  out <- as.data.frame(df, stringsAsFactors = FALSE)
+  rownames(out) <- NULL
+  out
+}
+
+round_df_4 <- function(df) {
+  df %>%
+    dplyr::mutate(dplyr::across(where(is.numeric), ~ round(.x, 4)))
+}
+
+collapse_unique <- function(x) {
+  x <- unique(stats::na.omit(x))
+  if (length(x) == 0) return(NA_character_)
+  paste(x, collapse = " | ")
+}
+
+progress_note <- function(..., verbose = TRUE) {
+  if (!isTRUE(verbose)) return(invisible(NULL))
+  msg <- paste0(...)
+  message(msg)
+  flush.console()
+}
+
+# =========================================================
+# DATEN
+# =========================================================
+
+prep_family_screen_data <- function(df,
+                                    response = "FRT",
+                                    use_speaker = FALSE) {
+  needed <- c(response, "nLetters", "Participant", "Topic", "condition", "AOI")
+  if (use_speaker) needed <- c(needed, "speaker")
+
+  missing_cols <- setdiff(needed, names(df))
+  if (length(missing_cols) > 0) {
+    stop("Fehlende Variablen: ", paste(missing_cols, collapse = ", "))
+  }
+
+  out <- df %>%
+    dplyr::filter(.data[[response]] > 0) %>%
+    dplyr::filter(!is.na(nLetters)) %>%
+    dplyr::filter(!is.na(Participant), !is.na(Topic), !is.na(condition), !is.na(AOI))
+
+  if (use_speaker) {
+    out <- out %>% dplyr::filter(!is.na(speaker))
+  }
+
+  out <- out %>%
+    dplyr::mutate(
+      Participant = factor(Participant),
+      Topic = factor(Topic),
+      condition = factor(condition),
+      AOI = factor(AOI)
+    )
+
+  if (use_speaker) {
+    out <- out %>% dplyr::mutate(speaker = factor(speaker))
+  }
+
+  safe_plain_df(out)
+}
+
+# =========================================================
+# FORMELN PRO AOI
+# =========================================================
+
+make_formula_aoi <- function(response = "FRT",
+                             use_speaker = FALSE) {
+  rhs <- if (use_speaker) {
+    "condition * speaker + nLetters + (1 | Topic) + (1 | Participant)"
+  } else {
+    "condition + nLetters + (1 | Topic) + (1 | Participant)"
+  }
+
+  as.formula(paste(response, "~", rhs))
+}
+
+# =========================================================
+# FAMILIEN
+# =========================================================
+
+family_names <- c(
+  "gamma_log",
+  "nbinom2",
+  "lognormal",
+  "invgauss",
+  "tweedie",
+  "normal"
+)
+
+get_glmmtmb_family <- function(family_name) {
+  switch(
+    family_name,
+    gamma_log = Gamma(link = "log"),
+    nbinom2   = glmmTMB::nbinom2(link = "log"),
+    lognormal = glmmTMB::lognormal(link = "log"),
+    invgauss  = inverse.gaussian(link = "log"),
+    tweedie   = glmmTMB::tweedie(link = "log"),
+    stop("Unbekannte glmmTMB-Familie: ", family_name)
+  )
+}
+
+# =========================================================
+# DESIGNMATRIX-CHECK PRO AOI
+# =========================================================
+
+inspect_design_matrix_identifiability <- function(df,
+                                                  formula,
+                                                  use_speaker = FALSE) {
+  fixed_formula <- lme4::nobars(formula)
+  mf_fixed <- model.frame(fixed_formula, data = droplevels(df), na.action = na.omit)
+  X <- model.matrix(fixed_formula, data = mf_fixed)
+
+  qrX <- qr(X)
+  rankX <- qrX$rank
+  pX <- ncol(X)
+  rankdef <- rankX < pX
+
+  redundant_cols <- if (rankdef) {
+    pivot <- qrX$pivot
+    redundant_idx <- pivot[seq.int(rankX + 1, pX)]
+    colnames(X)[redundant_idx]
+  } else {
+    character(0)
+  }
+
+  n_distinct_nLetters <- dplyr::n_distinct(df$nLetters)
+  min_nLetters <- min(df$nLetters)
+  max_nLetters <- max(df$nLetters)
+
+  cell_df <- if (use_speaker) {
+    df %>%
+      dplyr::group_by(condition, speaker, .drop = FALSE)
+  } else {
+    df %>%
+      dplyr::group_by(condition, .drop = FALSE)
+  }
+
+  cell_df <- cell_df %>%
+    dplyr::summarise(
+      n_obs = dplyr::n(),
+      n_distinct_nLetters = dplyr::n_distinct(nLetters),
+      .groups = "drop"
+    )
+
+  n_cells_total <- nrow(cell_df)
+  n_cells_nLetters_constant <- sum(cell_df$n_distinct_nLetters <= 1)
+
+  redundant_cols_text <- collapse_unique(redundant_cols)
+
+  redundant_involve_nLetters <- if (length(redundant_cols) == 0) {
+    FALSE
+  } else {
+    any(grepl("nLetters", redundant_cols, fixed = TRUE))
+  }
+
+  rankdef_consistent_with_nLetters_issue <- rankdef &&
+    (
+      n_distinct_nLetters <= 1 ||
+      redundant_involve_nLetters ||
+      n_cells_nLetters_constant > 0
+    )
+
+  rankdef_consistency_reason <- dplyr::case_when(
+    !rankdef ~ NA_character_,
+    n_distinct_nLetters <= 1 ~ "nLetters_has_no_global_variation",
+    redundant_involve_nLetters & n_cells_nLetters_constant > 0 ~
+      "redundant_cols_involve_nLetters_and_nLetters_is_constant_in_some_cells",
+    redundant_involve_nLetters ~
+      "redundant_cols_involve_nLetters",
+    n_cells_nLetters_constant > 0 ~
+      "nLetters_is_constant_in_some_cells_but_redundancy_is_not_uniquely_attributable",
+    TRUE ~
+      "not_clearly_consistent_with_nLetters_issue"
+  )
+
+  tibble(
+    X_rank = rankX,
+    X_ncol = pX,
+    fit_rank_deficient = rankdef,
+    redundant_cols = redundant_cols_text,
+    n_distinct_nLetters = n_distinct_nLetters,
+    min_nLetters = min_nLetters,
+    max_nLetters = max_nLetters,
+    n_design_cells = n_cells_total,
+    n_cells_nLetters_constant = n_cells_nLetters_constant,
+    rankdef_consistent_with_nLetters_issue = rankdef_consistent_with_nLetters_issue,
+    rankdef_consistency_reason = rankdef_consistency_reason
+  )
+}
+
+# =========================================================
+# GLMMTMB FIT
+# =========================================================
+
+fit_glmmtmb_capture <- function(df,
+                                formula,
+                                family_name) {
+  warn_texts <- character()
+  msg_texts  <- character()
+
+  fam <- get_glmmtmb_family(family_name)
+
+  fit <- withCallingHandlers(
+    tryCatch(
+      glmmTMB::glmmTMB(
+        formula = formula,
+        data = droplevels(df),
+        family = fam
+      ),
+      error = function(e) e
+    ),
+    warning = function(w) {
+      warn_texts <<- c(warn_texts, conditionMessage(w))
+      invokeRestart("muffleWarning")
+    },
+    message = function(m) {
+      msg_texts <<- c(msg_texts, conditionMessage(m))
+      invokeRestart("muffleMessage")
+    }
+  )
+
+  if (inherits(fit, "error")) {
+    return(tibble(
+      fit_ok = FALSE,
+      fit_error = conditionMessage(fit),
+      fit_warning_text = collapse_unique(warn_texts),
+      fit_message_text = collapse_unique(msg_texts),
+      n_warning_messages = length(unique(stats::na.omit(warn_texts))),
+      n_messages = length(unique(stats::na.omit(msg_texts))),
+      fit_nonposdef_hessian = NA,
+      fit_nonzero_convergence = NA,
+      fit_singular = NA,
+      aic = NA_real_,
+      bic = NA_real_,
+      logLik = NA_real_
+    ))
+  }
+
+  fit_nonposdef_hessian <- tryCatch(
+    !isTRUE(fit$sdr$pdHess),
+    error = function(e) NA
+  )
+
+  fit_nonzero_convergence <- tryCatch(
+    {
+      conv <- fit$fit$convergence
+      if (is.null(conv)) NA else conv != 0
+    },
+    error = function(e) NA
+  )
+
+  tibble(
+    fit_ok = TRUE,
+    fit_error = NA_character_,
+    fit_warning_text = collapse_unique(warn_texts),
+    fit_message_text = collapse_unique(msg_texts),
+    n_warning_messages = length(unique(stats::na.omit(warn_texts))),
+    n_messages = length(unique(stats::na.omit(msg_texts))),
+    fit_nonposdef_hessian = fit_nonposdef_hessian,
+    fit_nonzero_convergence = fit_nonzero_convergence,
+    fit_singular = NA,
+    aic = tryCatch(as.numeric(AIC(fit)), error = function(e) NA_real_),
+    bic = tryCatch(as.numeric(BIC(fit)), error = function(e) NA_real_),
+    logLik = tryCatch(as.numeric(logLik(fit)), error = function(e) NA_real_)
+  )
+}
+
+# =========================================================
+# LMER FIT
+# =========================================================
+
+fit_lmer_capture <- function(df,
+                             formula) {
+  warn_texts <- character()
+  msg_texts  <- character()
+
+  fit <- withCallingHandlers(
+    tryCatch(
+      lme4::lmer(
+        formula = formula,
+        data = droplevels(df),
+        REML = FALSE,
+        control = lme4::lmerControl(
+          check.rankX = "message+drop.cols",
+          check.conv.singular = "message",
+          check.conv.hess = "warning",
+          check.conv.grad = "warning"
+        )
+      ),
+      error = function(e) e
+    ),
+    warning = function(w) {
+      warn_texts <<- c(warn_texts, conditionMessage(w))
+      invokeRestart("muffleWarning")
+    },
+    message = function(m) {
+      msg_texts <<- c(msg_texts, conditionMessage(m))
+      invokeRestart("muffleMessage")
+    }
+  )
+
+  if (inherits(fit, "error")) {
+    return(tibble(
+      fit_ok = FALSE,
+      fit_error = conditionMessage(fit),
+      fit_warning_text = collapse_unique(warn_texts),
+      fit_message_text = collapse_unique(msg_texts),
+      n_warning_messages = length(unique(stats::na.omit(warn_texts))),
+      n_messages = length(unique(stats::na.omit(msg_texts))),
+      fit_nonposdef_hessian = NA,
+      fit_nonzero_convergence = NA,
+      fit_singular = NA,
+      aic = NA_real_,
+      bic = NA_real_,
+      logLik = NA_real_
+    ))
+  }
+
+  fit_singular <- lme4::isSingular(fit, tol = 1e-5)
+
+  tibble(
+    fit_ok = TRUE,
+    fit_error = NA_character_,
+    fit_warning_text = collapse_unique(warn_texts),
+    fit_message_text = collapse_unique(msg_texts),
+    n_warning_messages = length(unique(stats::na.omit(warn_texts))),
+    n_messages = length(unique(stats::na.omit(msg_texts))),
+    fit_nonposdef_hessian = NA,
+    fit_nonzero_convergence = NA,
+    fit_singular = fit_singular,
+    aic = tryCatch(as.numeric(AIC(fit)), error = function(e) NA_real_),
+    bic = tryCatch(as.numeric(BIC(fit)), error = function(e) NA_real_),
+    logLik = tryCatch(as.numeric(logLik(fit)), error = function(e) NA_real_)
+  )
+}
+
+# =========================================================
+# DISPATCH
+# =========================================================
+
+fit_model_capture <- function(df,
+                              formula,
+                              family_name) {
+  if (family_name == "normal") {
+    fit_lmer_capture(
+      df = df,
+      formula = formula
+    )
+  } else {
+    fit_glmmtmb_capture(
+      df = df,
+      formula = formula,
+      family_name = family_name
+    )
+  }
+}
+
+# =========================================================
+# EINE FIT-SITUATION
+# =========================================================
+
+fit_one_screen_case <- function(df,
+                                formula,
+                                family_name,
+                                use_speaker = FALSE) {
+  design_info <- inspect_design_matrix_identifiability(
+    df = df,
+    formula = formula,
+    use_speaker = use_speaker
+  )
+
+  fit_info <- fit_model_capture(
+    df = df,
+    formula = formula,
+    family_name = family_name
+  )
+
+  dplyr::bind_cols(design_info, fit_info)
+}
+
+# =========================================================
+# VOLLE DATEN: EIN EXPERIMENT, GETRENNT PRO AOI
+# =========================================================
+
+run_family_screen_full_one_experiment <- function(df,
+                                                  exp_name,
+                                                  response = "FRT",
+                                                  use_speaker = FALSE,
+                                                  verbose = TRUE) {
+  dat <- prep_family_screen_data(df, response, use_speaker)
+
+  aois <- levels(droplevels(dat$AOI))
+
+  purrr::map_dfr(family_names, function(fam_i) {
+    purrr::map_dfr(aois, function(aoi_i) {
+      dat_aoi <- dat %>%
+        dplyr::filter(AOI == aoi_i)
+
+      formula_i <- make_formula_aoi(
+        response = response,
+        use_speaker = use_speaker
+      )
+
+      progress_note(
+        "[FULL AOI] exp=", exp_name,
+        " family=", fam_i,
+        " AOI=", aoi_i,
+        " n=", nrow(dat_aoi),
+        verbose = verbose
+      )
+
+      fit_out <- fit_one_screen_case(
+        df = dat_aoi,
+        formula = formula_i,
+        family_name = fam_i,
+        use_speaker = use_speaker
+      )
+
+      tibble(
+        experiment = exp_name,
+        family_name = fam_i,
+        AOI = as.character(aoi_i),
+        n_obs = nrow(dat_aoi),
+        n_topics = dplyr::n_distinct(dat_aoi$Topic),
+        n_participants = dplyr::n_distinct(dat_aoi$Participant),
+        formula = paste(deparse(formula_i), collapse = " ")
+      ) %>%
+        dplyr::bind_cols(fit_out)
+    })
+  })
+}
+
+# =========================================================
+# ÜBER ALLE EXPERIMENTE
+# =========================================================
+
+run_family_screen_full_all <- function(dfs,
+                                       response = "FRT",
+                                       experiments_with_speaker = c("n_bed", "n_ein", "CS"),
+                                       verbose = TRUE) {
+  full_all <- purrr::imap_dfr(dfs, function(df, exp_name) {
+    run_family_screen_full_one_experiment(
+      df = df,
+      exp_name = exp_name,
+      response = response,
+      use_speaker = exp_name %in% experiments_with_speaker,
+      verbose = verbose
+    )
+  })
+
+  full_summary <- full_all %>%
+    dplyr::mutate(has_warning = n_warning_messages > 0) %>%
+    dplyr::group_by(experiment, family_name) %>%
+    dplyr::summarise(
+      n_aois = dplyr::n(),
+      n_fit_failed = sum(fit_ok %in% FALSE, na.rm = TRUE),
+      n_nonposdef_hessian = sum(fit_nonposdef_hessian %in% TRUE, na.rm = TRUE),
+      n_nonzero_convergence = sum(fit_nonzero_convergence %in% TRUE, na.rm = TRUE),
+      n_rank_deficient = sum(fit_rank_deficient %in% TRUE, na.rm = TRUE),
+      n_rankdef_consistent_with_nLetters_issue = sum(rankdef_consistent_with_nLetters_issue %in% TRUE, na.rm = TRUE),
+      n_rankdef_not_clearly_consistent_with_nLetters_issue = sum(
+        fit_rank_deficient %in% TRUE & !(rankdef_consistent_with_nLetters_issue %in% TRUE),
+        na.rm = TRUE
+      ),
+      n_singular = sum(fit_singular %in% TRUE, na.rm = TRUE),
+      n_fits_with_warning = sum(has_warning, na.rm = TRUE),
+      total_warning_messages = sum(n_warning_messages, na.rm = TRUE),
+      mean_aic = mean(aic, na.rm = TRUE),
+      median_aic = median(aic, na.rm = TRUE),
+      .groups = "drop"
+    )
+
+  full_overall <- full_all %>%
+    dplyr::mutate(has_warning = n_warning_messages > 0) %>%
+    dplyr::group_by(family_name) %>%
+    dplyr::summarise(
+      n_aois = dplyr::n(),
+      n_fit_failed = sum(fit_ok %in% FALSE, na.rm = TRUE),
+      n_nonposdef_hessian = sum(fit_nonposdef_hessian %in% TRUE, na.rm = TRUE),
+      n_nonzero_convergence = sum(fit_nonzero_convergence %in% TRUE, na.rm = TRUE),
+      n_rank_deficient = sum(fit_rank_deficient %in% TRUE, na.rm = TRUE),
+      n_rankdef_consistent_with_nLetters_issue = sum(rankdef_consistent_with_nLetters_issue %in% TRUE, na.rm = TRUE),
+      n_rankdef_not_clearly_consistent_with_nLetters_issue = sum(
+        fit_rank_deficient %in% TRUE & !(rankdef_consistent_with_nLetters_issue %in% TRUE),
+        na.rm = TRUE
+      ),
+      n_singular = sum(fit_singular %in% TRUE, na.rm = TRUE),
+      n_fits_with_warning = sum(has_warning, na.rm = TRUE),
+      total_warning_messages = sum(n_warning_messages, na.rm = TRUE),
+      mean_aic = mean(aic, na.rm = TRUE),
+      median_aic = median(aic, na.rm = TRUE),
+      .groups = "drop"
+    )
+
+  list(
+    full_all = full_all,
+    full_summary = full_summary,
+    full_overall = full_overall
+  )
+}
+
+# =========================================================
+# AUSFÜHREN
+# =========================================================
+
+res_family_screen_full <- run_family_screen_full_all(
+  dfs = dfs,
+  response = "FRT",
+  experiments_with_speaker = experiments_with_speaker,
+  verbose = TRUE
+)
+
+# =========================================================
+# OUTPUTS
+# =========================================================
+
+#round_df_4(res_family_screen_full$full_all)
+round_df_4(res_family_screen_full$full_summary)
+round_df_4(res_family_screen_full$full_overall)
+```
+
+Wir sehen: nur gamma, negbin2 und normal (eine singularity) laufen unproblematisch durch
+
+Um Problem zu verdeutlichen, machen wir noch einen Topic LOO
+```{r}
+library(dplyr)
+library(tidyr)
+library(purrr)
+library(glmmTMB)
+library(lme4)
+library(tibble)
+
+# =========================================================
+# INPUT
+# =========================================================
+
+dfs <- list(
+  c_bed = c_bed,
+  c_ein = c_ein,
+  n_bed = n_bed,
+  n_ein = n_ein,
+  CS    = CS
+)
+
+experiments_with_speaker <- c("n_bed", "n_ein", "CS")
+
+# =========================================================
+# HELFER
+# =========================================================
+
+safe_plain_df <- function(df) {
+  out <- as.data.frame(df, stringsAsFactors = FALSE)
+  rownames(out) <- NULL
+  out
+}
+
+round_df_4 <- function(df) {
+  df %>%
+    dplyr::mutate(dplyr::across(where(is.numeric), ~ round(.x, 4)))
+}
+
+collapse_unique <- function(x) {
+  x <- unique(stats::na.omit(x))
+  if (length(x) == 0) return(NA_character_)
+  paste(x, collapse = " | ")
+}
+
+progress_note <- function(..., verbose = TRUE) {
+  if (!isTRUE(verbose)) return(invisible(NULL))
+  msg <- paste0(...)
+  message(msg)
+  flush.console()
+}
+
+rmse_vec <- function(obs, pred) {
+  keep <- is.finite(obs) & is.finite(pred)
+  obs <- obs[keep]
+  pred <- pred[keep]
+  if (length(obs) == 0) return(NA_real_)
+  sqrt(mean((obs - pred)^2))
+}
+
+mae_vec <- function(obs, pred) {
+  keep <- is.finite(obs) & is.finite(pred)
+  obs <- obs[keep]
+  pred <- pred[keep]
+  if (length(obs) == 0) return(NA_real_)
+  mean(abs(obs - pred))
+}
+
+safe_cor <- function(x, y) {
+  keep <- is.finite(x) & is.finite(y)
+  x <- x[keep]
+  y <- y[keep]
+  if (length(x) < 2) return(NA_real_)
+  sx <- stats::sd(x)
+  sy <- stats::sd(y)
+  if (!is.finite(sx) || !is.finite(sy) || sx == 0 || sy == 0) return(NA_real_)
+  stats::cor(x, y)
+}
+
+# =========================================================
+# DATEN
+# =========================================================
+
+prep_family_screen_data <- function(df,
+                                    response = "FRT",
+                                    use_speaker = FALSE) {
+  needed <- c(response, "nLetters", "Participant", "Topic", "condition", "AOI")
+  if (use_speaker) needed <- c(needed, "speaker")
+
+  missing_cols <- setdiff(needed, names(df))
+  if (length(missing_cols) > 0) {
+    stop("Fehlende Variablen: ", paste(missing_cols, collapse = ", "))
+  }
+
+  out <- df %>%
+    dplyr::filter(.data[[response]] > 0) %>%
+    dplyr::filter(!is.na(nLetters)) %>%
+    dplyr::filter(!is.na(Participant), !is.na(Topic), !is.na(condition), !is.na(AOI))
+
+  if (use_speaker) {
+    out <- out %>% dplyr::filter(!is.na(speaker))
+  }
+
+  out <- out %>%
+    dplyr::mutate(
+      Participant = factor(Participant),
+      Topic = factor(Topic),
+      condition = factor(condition),
+      AOI = factor(AOI)
+    )
+
+  if (use_speaker) {
+    out <- out %>% dplyr::mutate(speaker = factor(speaker))
+  }
+
+  safe_plain_df(out)
+}
+
+# =========================================================
+# FORMELN PRO AOI
+# =========================================================
+
+make_formula_aoi <- function(response = "FRT",
+                             use_speaker = FALSE) {
+  rhs <- if (use_speaker) {
+    "condition * speaker + nLetters + (1 | Topic) + (1 | Participant)"
+  } else {
+    "condition + nLetters + (1 | Topic) + (1 | Participant)"
+  }
+
+  as.formula(paste(response, "~", rhs))
+}
+
+# =========================================================
+# FAMILIEN
+# =========================================================
+
+family_names <- c(
+  "gamma_log",
+  "nbinom2",
+  "lognormal",
+  "invgauss",
+  "tweedie",
+  "normal"
+)
+
+get_glmmtmb_family <- function(family_name) {
+  switch(
+    family_name,
+    gamma_log = Gamma(link = "log"),
+    nbinom2   = glmmTMB::nbinom2(link = "log"),
+    lognormal = glmmTMB::lognormal(link = "log"),
+    invgauss  = inverse.gaussian(link = "log"),
+    tweedie   = glmmTMB::tweedie(link = "log"),
+    stop("Unbekannte glmmTMB-Familie: ", family_name)
+  )
+}
+
+# =========================================================
+# DESIGNMATRIX-CHECK PRO AOI
+# =========================================================
+
+inspect_design_matrix_identifiability <- function(df,
+                                                  formula,
+                                                  use_speaker = FALSE) {
+  fixed_formula <- lme4::nobars(formula)
+  mf_fixed <- model.frame(fixed_formula, data = droplevels(df), na.action = na.omit)
+  X <- model.matrix(fixed_formula, data = mf_fixed)
+
+  qrX <- qr(X)
+  rankX <- qrX$rank
+  pX <- ncol(X)
+  rankdef <- rankX < pX
+
+  redundant_cols <- if (rankdef) {
+    pivot <- qrX$pivot
+    redundant_idx <- pivot[seq.int(rankX + 1, pX)]
+    colnames(X)[redundant_idx]
+  } else {
+    character(0)
+  }
+
+  n_distinct_nLetters <- dplyr::n_distinct(df$nLetters)
+  min_nLetters <- min(df$nLetters)
+  max_nLetters <- max(df$nLetters)
+
+  cell_df <- if (use_speaker) {
+    df %>%
+      dplyr::group_by(condition, speaker, .drop = FALSE)
+  } else {
+    df %>%
+      dplyr::group_by(condition, .drop = FALSE)
+  }
+
+  cell_df <- cell_df %>%
+    dplyr::summarise(
+      n_obs = dplyr::n(),
+      n_distinct_nLetters = dplyr::n_distinct(nLetters),
+      .groups = "drop"
+    )
+
+  n_cells_total <- nrow(cell_df)
+  n_cells_nLetters_constant <- sum(cell_df$n_distinct_nLetters <= 1)
+
+  redundant_cols_text <- collapse_unique(redundant_cols)
+
+  redundant_involve_nLetters <- if (length(redundant_cols) == 0) {
+    FALSE
+  } else {
+    any(grepl("nLetters", redundant_cols, fixed = TRUE))
+  }
+
+  rankdef_consistent_with_nLetters_issue <- rankdef &&
+    (
+      n_distinct_nLetters <= 1 ||
+      redundant_involve_nLetters ||
+      n_cells_nLetters_constant > 0
+    )
+
+  rankdef_consistency_reason <- dplyr::case_when(
+    !rankdef ~ NA_character_,
+    n_distinct_nLetters <= 1 ~ "nLetters_has_no_global_variation",
+    redundant_involve_nLetters & n_cells_nLetters_constant > 0 ~
+      "redundant_cols_involve_nLetters_and_nLetters_is_constant_in_some_cells",
+    redundant_involve_nLetters ~
+      "redundant_cols_involve_nLetters",
+    n_cells_nLetters_constant > 0 ~
+      "nLetters_is_constant_in_some_cells_but_redundancy_is_not_uniquely_attributable",
+    TRUE ~
+      "not_clearly_consistent_with_nLetters_issue"
+  )
+
+  tibble(
+    X_rank = rankX,
+    X_ncol = pX,
+    fit_rank_deficient = rankdef,
+    redundant_cols = redundant_cols_text,
+    n_distinct_nLetters = n_distinct_nLetters,
+    min_nLetters = min_nLetters,
+    max_nLetters = max_nLetters,
+    n_design_cells = n_cells_total,
+    n_cells_nLetters_constant = n_cells_nLetters_constant,
+    rankdef_consistent_with_nLetters_issue = rankdef_consistent_with_nLetters_issue,
+    rankdef_consistency_reason = rankdef_consistency_reason
+  )
+}
+
+# =========================================================
+# FITS
+# =========================================================
+
+fit_glmmtmb_capture <- function(df,
+                                formula,
+                                family_name) {
+  warn_texts <- character()
+  msg_texts  <- character()
+
+  fam <- get_glmmtmb_family(family_name)
+
+  fit <- withCallingHandlers(
+    tryCatch(
+      glmmTMB::glmmTMB(
+        formula = formula,
+        data = droplevels(df),
+        family = fam
+      ),
+      error = function(e) e
+    ),
+    warning = function(w) {
+      warn_texts <<- c(warn_texts, conditionMessage(w))
+      invokeRestart("muffleWarning")
+    },
+    message = function(m) {
+      msg_texts <<- c(msg_texts, conditionMessage(m))
+      invokeRestart("muffleMessage")
+    }
+  )
+
+  if (inherits(fit, "error")) {
+    return(list(
+      fit = NULL,
+      fit_info = tibble(
+        fit_ok = FALSE,
+        fit_error = conditionMessage(fit),
+        fit_warning_text = collapse_unique(warn_texts),
+        fit_message_text = collapse_unique(msg_texts),
+        n_warning_messages = length(unique(stats::na.omit(warn_texts))),
+        n_messages = length(unique(stats::na.omit(msg_texts))),
+        fit_nonposdef_hessian = NA,
+        fit_nonzero_convergence = NA,
+        fit_singular = NA,
+        aic = NA_real_,
+        bic = NA_real_,
+        logLik = NA_real_
+      )
+    ))
+  }
+
+  fit_nonposdef_hessian <- tryCatch(
+    !isTRUE(fit$sdr$pdHess),
+    error = function(e) NA
+  )
+
+  fit_nonzero_convergence <- tryCatch(
+    {
+      conv <- fit$fit$convergence
+      if (is.null(conv)) NA else conv != 0
+    },
+    error = function(e) NA
+  )
+
+  list(
+    fit = fit,
+    fit_info = tibble(
+      fit_ok = TRUE,
+      fit_error = NA_character_,
+      fit_warning_text = collapse_unique(warn_texts),
+      fit_message_text = collapse_unique(msg_texts),
+      n_warning_messages = length(unique(stats::na.omit(warn_texts))),
+      n_messages = length(unique(stats::na.omit(msg_texts))),
+      fit_nonposdef_hessian = fit_nonposdef_hessian,
+      fit_nonzero_convergence = fit_nonzero_convergence,
+      fit_singular = NA,
+      aic = tryCatch(as.numeric(AIC(fit)), error = function(e) NA_real_),
+      bic = tryCatch(as.numeric(BIC(fit)), error = function(e) NA_real_),
+      logLik = tryCatch(as.numeric(logLik(fit)), error = function(e) NA_real_)
+    )
+  )
+}
+
+fit_lmer_capture <- function(df,
+                             formula) {
+  warn_texts <- character()
+  msg_texts  <- character()
+
+  fit <- withCallingHandlers(
+    tryCatch(
+      lme4::lmer(
+        formula = formula,
+        data = droplevels(df),
+        REML = FALSE,
+        control = lme4::lmerControl(
+          check.rankX = "message+drop.cols",
+          check.conv.singular = "message",
+          check.conv.hess = "warning",
+          check.conv.grad = "warning"
+        )
+      ),
+      error = function(e) e
+    ),
+    warning = function(w) {
+      warn_texts <<- c(warn_texts, conditionMessage(w))
+      invokeRestart("muffleWarning")
+    },
+    message = function(m) {
+      msg_texts <<- c(msg_texts, conditionMessage(m))
+      invokeRestart("muffleMessage")
+    }
+  )
+
+  if (inherits(fit, "error")) {
+    return(list(
+      fit = NULL,
+      fit_info = tibble(
+        fit_ok = FALSE,
+        fit_error = conditionMessage(fit),
+        fit_warning_text = collapse_unique(warn_texts),
+        fit_message_text = collapse_unique(msg_texts),
+        n_warning_messages = length(unique(stats::na.omit(warn_texts))),
+        n_messages = length(unique(stats::na.omit(msg_texts))),
+        fit_nonposdef_hessian = NA,
+        fit_nonzero_convergence = NA,
+        fit_singular = NA,
+        aic = NA_real_,
+        bic = NA_real_,
+        logLik = NA_real_
+      )
+    ))
+  }
+
+  fit_singular <- lme4::isSingular(fit, tol = 1e-5)
+
+  list(
+    fit = fit,
+    fit_info = tibble(
+      fit_ok = TRUE,
+      fit_error = NA_character_,
+      fit_warning_text = collapse_unique(warn_texts),
+      fit_message_text = collapse_unique(msg_texts),
+      n_warning_messages = length(unique(stats::na.omit(warn_texts))),
+      n_messages = length(unique(stats::na.omit(msg_texts))),
+      fit_nonposdef_hessian = NA,
+      fit_nonzero_convergence = NA,
+      fit_singular = fit_singular,
+      aic = tryCatch(as.numeric(AIC(fit)), error = function(e) NA_real_),
+      bic = tryCatch(as.numeric(BIC(fit)), error = function(e) NA_real_),
+      logLik = tryCatch(as.numeric(logLik(fit)), error = function(e) NA_real_)
+    )
+  )
+}
+
+fit_model_capture <- function(df,
+                              formula,
+                              family_name) {
+  if (family_name == "normal") {
+    fit_lmer_capture(df = df, formula = formula)
+  } else {
+    fit_glmmtmb_capture(df = df, formula = formula, family_name = family_name)
+  }
+}
+
+# =========================================================
+# PREDICT
+# =========================================================
+
+predict_model_capture <- function(fit_obj,
+                                  newdata,
+                                  family_name) {
+  warn_texts <- character()
+  msg_texts  <- character()
+
+  pred <- withCallingHandlers(
+    tryCatch(
+      {
+        if (family_name == "normal") {
+          stats::predict(
+            fit_obj,
+            newdata = droplevels(newdata),
+            re.form = NULL,
+            allow.new.levels = TRUE
+          )
+        } else if (family_name == "lognormal") {
+          exp(
+            stats::predict(
+              fit_obj,
+              newdata = droplevels(newdata),
+              type = "link",
+              allow.new.levels = TRUE
+            )
+          )
+        } else {
+          stats::predict(
+            fit_obj,
+            newdata = droplevels(newdata),
+            type = "response",
+            allow.new.levels = TRUE
+          )
+        }
+      },
+      error = function(e) e
+    ),
+    warning = function(w) {
+      warn_texts <<- c(warn_texts, conditionMessage(w))
+      invokeRestart("muffleWarning")
+    },
+    message = function(m) {
+      msg_texts <<- c(msg_texts, conditionMessage(m))
+      invokeRestart("muffleMessage")
+    }
+  )
+
+  if (inherits(pred, "error")) {
+    return(tibble(
+      pred_ok = FALSE,
+      pred_error = conditionMessage(pred),
+      pred_warning_text = collapse_unique(warn_texts),
+      pred_message_text = collapse_unique(msg_texts),
+      n_pred_warning_messages = length(unique(stats::na.omit(warn_texts))),
+      n_pred_messages = length(unique(stats::na.omit(msg_texts))),
+      n_pred_nonmissing = NA_integer_,
+      rmse = NA_real_,
+      mae = NA_real_,
+      cor_obs_pred = NA_real_
+    ))
+  }
+
+  pred_vals <- as.numeric(pred)
+  obs <- newdata$FRT
+
+  tibble(
+    pred_ok = TRUE,
+    pred_error = NA_character_,
+    pred_warning_text = collapse_unique(warn_texts),
+    pred_message_text = collapse_unique(msg_texts),
+    n_pred_warning_messages = length(unique(stats::na.omit(warn_texts))),
+    n_pred_messages = length(unique(stats::na.omit(msg_texts))),
+    n_pred_nonmissing = sum(is.finite(pred_vals)),
+    rmse = rmse_vec(obs, pred_vals),
+    mae = mae_vec(obs, pred_vals),
+    cor_obs_pred = safe_cor(obs, pred_vals)
+  )
+}
+
+# =========================================================
+# EINE FIT-SITUATION
+# =========================================================
+
+fit_one_screen_case <- function(df_train,
+                                formula,
+                                family_name,
+                                use_speaker = FALSE) {
+  design_info <- inspect_design_matrix_identifiability(
+    df = df_train,
+    formula = formula,
+    use_speaker = use_speaker
+  )
+
+  fit_res <- fit_model_capture(
+    df = df_train,
+    formula = formula,
+    family_name = family_name
+  )
+
+  list(
+    design_info = design_info,
+    fit_info = fit_res$fit_info,
+    fit = fit_res$fit
+  )
+}
+
+# =========================================================
+# TOPIC-LOO: EIN EXPERIMENT, GETRENNT PRO AOI
+# =========================================================
+
+run_family_screen_topicloo_one_experiment <- function(df,
+                                                      exp_name,
+                                                      response = "FRT",
+                                                      use_speaker = FALSE,
+                                                      verbose = TRUE) {
+  dat <- prep_family_screen_data(df, response, use_speaker)
+
+  aois <- levels(droplevels(dat$AOI))
+
+  purrr::map_dfr(family_names, function(fam_i) {
+    purrr::map_dfr(aois, function(aoi_i) {
+      dat_aoi <- dat %>%
+        dplyr::filter(AOI == aoi_i)
+
+      topics <- levels(droplevels(dat_aoi$Topic))
+
+      purrr::map_dfr(topics, function(topic_holdout) {
+        dat_train <- dat_aoi %>% dplyr::filter(Topic != topic_holdout)
+        dat_test  <- dat_aoi %>% dplyr::filter(Topic == topic_holdout)
+
+        formula_i <- make_formula_aoi(
+          response = response,
+          use_speaker = use_speaker
+        )
+
+        progress_note(
+          "[TOPIC-LOO AOI] exp=", exp_name,
+          " family=", fam_i,
+          " AOI=", aoi_i,
+          " holdout_topic=", topic_holdout,
+          " n_train=", nrow(dat_train),
+          " n_test=", nrow(dat_test),
+          verbose = verbose
+        )
+
+        if (nrow(dat_train) == 0 || nrow(dat_test) == 0) {
+          return(tibble(
+            experiment = exp_name,
+            family_name = fam_i,
+            AOI = as.character(aoi_i),
+            holdout_topic = as.character(topic_holdout),
+            n_train = nrow(dat_train),
+            n_test = nrow(dat_test),
+            n_topics_train = dplyr::n_distinct(dat_train$Topic),
+            n_participants_train = dplyr::n_distinct(dat_train$Participant),
+            formula = paste(deparse(formula_i), collapse = " "),
+            X_rank = NA_real_,
+            X_ncol = NA_real_,
+            fit_rank_deficient = NA,
+            redundant_cols = NA_character_,
+            n_distinct_nLetters = NA_real_,
+            min_nLetters = NA_real_,
+            max_nLetters = NA_real_,
+            n_design_cells = NA_real_,
+            n_cells_nLetters_constant = NA_real_,
+            rankdef_consistent_with_nLetters_issue = NA,
+            rankdef_consistency_reason = NA_character_,
+            fit_ok = FALSE,
+            fit_error = "empty_train_or_test_fold",
+            fit_warning_text = NA_character_,
+            fit_message_text = NA_character_,
+            n_warning_messages = NA_real_,
+            n_messages = NA_real_,
+            fit_nonposdef_hessian = NA,
+            fit_nonzero_convergence = NA,
+            fit_singular = NA,
+            aic = NA_real_,
+            bic = NA_real_,
+            logLik = NA_real_,
+            pred_ok = FALSE,
+            pred_error = NA_character_,
+            pred_warning_text = NA_character_,
+            pred_message_text = NA_character_,
+            n_pred_warning_messages = NA_real_,
+            n_pred_messages = NA_real_,
+            n_pred_nonmissing = NA_real_,
+            rmse = NA_real_,
+            mae = NA_real_,
+            cor_obs_pred = NA_real_
+          ))
+        }
+
+        fit_res <- fit_one_screen_case(
+          df_train = dat_train,
+          formula = formula_i,
+          family_name = fam_i,
+          use_speaker = use_speaker
+        )
+
+        pred_info <- if (isTRUE(fit_res$fit_info$fit_ok[1])) {
+          predict_model_capture(
+            fit_obj = fit_res$fit,
+            newdata = dat_test,
+            family_name = fam_i
+          )
+        } else {
+          tibble(
+            pred_ok = FALSE,
+            pred_error = NA_character_,
+            pred_warning_text = NA_character_,
+            pred_message_text = NA_character_,
+            n_pred_warning_messages = NA_real_,
+            n_pred_messages = NA_real_,
+            n_pred_nonmissing = NA_real_,
+            rmse = NA_real_,
+            mae = NA_real_,
+            cor_obs_pred = NA_real_
+          )
+        }
+
+        tibble(
+          experiment = exp_name,
+          family_name = fam_i,
+          AOI = as.character(aoi_i),
+          holdout_topic = as.character(topic_holdout),
+          n_train = nrow(dat_train),
+          n_test = nrow(dat_test),
+          n_topics_train = dplyr::n_distinct(dat_train$Topic),
+          n_participants_train = dplyr::n_distinct(dat_train$Participant),
+          formula = paste(deparse(formula_i), collapse = " ")
+        ) %>%
+          dplyr::bind_cols(
+            fit_res$design_info,
+            fit_res$fit_info,
+            pred_info
+          )
+      })
+    })
+  })
+}
+
+# =========================================================
+# ÜBER ALLE EXPERIMENTE
+# =========================================================
+
+run_family_screen_topicloo_all <- function(dfs,
+                                           response = "FRT",
+                                           experiments_with_speaker = c("n_bed", "n_ein", "CS"),
+                                           verbose = TRUE) {
+  loo_all <- purrr::imap_dfr(dfs, function(df, exp_name) {
+    run_family_screen_topicloo_one_experiment(
+      df = df,
+      exp_name = exp_name,
+      response = response,
+      use_speaker = exp_name %in% experiments_with_speaker,
+      verbose = verbose
+    )
+  })
+
+  loo_summary <- loo_all %>%
+    dplyr::mutate(
+      has_fit_warning = n_warning_messages > 0,
+      has_pred_warning = n_pred_warning_messages > 0
+    ) %>%
+    dplyr::group_by(experiment, family_name) %>%
+    dplyr::summarise(
+      n_folds = dplyr::n(),
+      n_fit_failed = sum(fit_ok %in% FALSE, na.rm = TRUE),
+      n_pred_failed = sum(pred_ok %in% FALSE, na.rm = TRUE),
+      n_nonposdef_hessian = sum(fit_nonposdef_hessian %in% TRUE, na.rm = TRUE),
+      n_nonzero_convergence = sum(fit_nonzero_convergence %in% TRUE, na.rm = TRUE),
+      n_rank_deficient = sum(fit_rank_deficient %in% TRUE, na.rm = TRUE),
+      n_rankdef_consistent_with_nLetters_issue = sum(rankdef_consistent_with_nLetters_issue %in% TRUE, na.rm = TRUE),
+      n_rankdef_not_clearly_consistent_with_nLetters_issue = sum(
+        fit_rank_deficient %in% TRUE & !(rankdef_consistent_with_nLetters_issue %in% TRUE),
+        na.rm = TRUE
+      ),
+      n_singular = sum(fit_singular %in% TRUE, na.rm = TRUE),
+      n_fits_with_warning = sum(has_fit_warning, na.rm = TRUE),
+      n_preds_with_warning = sum(has_pred_warning, na.rm = TRUE),
+      total_fit_warning_messages = sum(n_warning_messages, na.rm = TRUE),
+      total_pred_warning_messages = sum(n_pred_warning_messages, na.rm = TRUE),
+      mean_rmse = mean(rmse, na.rm = TRUE),
+      median_rmse = median(rmse, na.rm = TRUE),
+      mean_mae = mean(mae, na.rm = TRUE),
+      median_mae = median(mae, na.rm = TRUE),
+      mean_cor_obs_pred = mean(cor_obs_pred, na.rm = TRUE),
+      median_cor_obs_pred = median(cor_obs_pred, na.rm = TRUE),
+      .groups = "drop"
+    )
+
+  loo_overall <- loo_all %>%
+    dplyr::mutate(
+      has_fit_warning = n_warning_messages > 0,
+      has_pred_warning = n_pred_warning_messages > 0
+    ) %>%
+    dplyr::group_by(family_name) %>%
+    dplyr::summarise(
+      n_folds = dplyr::n(),
+      n_fit_failed = sum(fit_ok %in% FALSE, na.rm = TRUE),
+      n_pred_failed = sum(pred_ok %in% FALSE, na.rm = TRUE),
+      n_nonposdef_hessian = sum(fit_nonposdef_hessian %in% TRUE, na.rm = TRUE),
+      n_nonzero_convergence = sum(fit_nonzero_convergence %in% TRUE, na.rm = TRUE),
+      n_rank_deficient = sum(fit_rank_deficient %in% TRUE, na.rm = TRUE),
+      n_rankdef_consistent_with_nLetters_issue = sum(rankdef_consistent_with_nLetters_issue %in% TRUE, na.rm = TRUE),
+      n_rankdef_not_clearly_consistent_with_nLetters_issue = sum(
+        fit_rank_deficient %in% TRUE & !(rankdef_consistent_with_nLetters_issue %in% TRUE),
+        na.rm = TRUE
+      ),
+      n_singular = sum(fit_singular %in% TRUE, na.rm = TRUE),
+      n_fits_with_warning = sum(has_fit_warning, na.rm = TRUE),
+      n_preds_with_warning = sum(has_pred_warning, na.rm = TRUE),
+      total_fit_warning_messages = sum(n_warning_messages, na.rm = TRUE),
+      total_pred_warning_messages = sum(n_pred_warning_messages, na.rm = TRUE),
+      mean_rmse = mean(rmse, na.rm = TRUE),
+      median_rmse = median(rmse, na.rm = TRUE),
+      mean_mae = mean(mae, na.rm = TRUE),
+      median_mae = median(mae, na.rm = TRUE),
+      mean_cor_obs_pred = mean(cor_obs_pred, na.rm = TRUE),
+      median_cor_obs_pred = median(cor_obs_pred, na.rm = TRUE),
+      .groups = "drop"
+    )
+
+  list(
+    loo_all = loo_all,
+    loo_summary = loo_summary,
+    loo_overall = loo_overall
+  )
+}
+
+# =========================================================
+# AUSFÜHREN
+# =========================================================
+
+res_family_screen_topicloo <- run_family_screen_topicloo_all(
+  dfs = dfs,
+  response = "FRT",
+  experiments_with_speaker = experiments_with_speaker,
+  verbose = TRUE
+)
+
+# =========================================================
+# OUTPUTS
+# =========================================================
+
+round_df_4(res_family_screen_topicloo$loo_all)
+round_df_4(res_family_screen_topicloo$loo_summary)
+round_df_4(res_family_screen_topicloo$loo_overall)%>%
+  dplyr::select(1:13)
+```
+
+Wir sehen: Numerisch eher unproblematisch sind: NegBin2, Gamma und Normal, alle anderen machen häufig probeme. 
+NegBin2 und Gamma haben jeweils eine n_nonposdef_hessian, normal hat 12 Singular Fits. 
+
+Prediction Güte nur die 3 Familien:
+```{r}
+library(dplyr)
+library(purrr)
+library(glmmTMB)
+library(lme4)
+library(tibble)
+
+# =========================================================
+# INPUT
+# =========================================================
+
+dfs <- list(
+  c_bed = c_bed,
+  c_ein = c_ein,
+  n_bed = n_bed,
+  n_ein = n_ein,
+  CS    = CS
+)
+
+experiments_with_speaker <- c("n_bed", "n_ein", "CS")
+
+family_names <- c(
+  "normal",
+  "gamma_log",
+  "nbinom2"
+)
+
+# =========================================================
+# HELFER
+# =========================================================
+
+safe_plain_df <- function(df) {
+  out <- as.data.frame(df, stringsAsFactors = FALSE)
+  rownames(out) <- NULL
+  out
+}
+
+round_df_4 <- function(df) {
+  df %>%
+    dplyr::mutate(dplyr::across(where(is.numeric), ~ round(.x, 4)))
+}
+
+collapse_unique <- function(x) {
+  x <- unique(stats::na.omit(x))
+  if (length(x) == 0) return(NA_character_)
+  paste(x, collapse = " | ")
+}
+
+progress_note <- function(..., verbose = TRUE) {
+  if (!isTRUE(verbose)) return(invisible(NULL))
+  msg <- paste0(...)
+  message(msg)
+  flush.console()
+}
+
+rmse_vec <- function(obs, pred) {
+  keep <- is.finite(obs) & is.finite(pred)
+  obs <- obs[keep]
+  pred <- pred[keep]
+  if (length(obs) == 0) return(NA_real_)
+  sqrt(mean((obs - pred)^2))
+}
+
+mae_vec <- function(obs, pred) {
+  keep <- is.finite(obs) & is.finite(pred)
+  obs <- obs[keep]
+  pred <- pred[keep]
+  if (length(obs) == 0) return(NA_real_)
+  mean(abs(obs - pred))
+}
+
+# =========================================================
+# DATEN
+# =========================================================
+
+prep_topicloo_data <- function(df,
+                               response = "FRT",
+                               use_speaker = FALSE) {
+  needed <- c(response, "nLetters", "Participant", "Topic", "condition", "AOI")
+  if (use_speaker) needed <- c(needed, "speaker")
+
+  missing_cols <- setdiff(needed, names(df))
+  if (length(missing_cols) > 0) {
+    stop("Fehlende Variablen: ", paste(missing_cols, collapse = ", "))
+  }
+
+  out <- df %>%
+    dplyr::filter(.data[[response]] > 0) %>%
+    dplyr::filter(!is.na(nLetters)) %>%
+    dplyr::filter(!is.na(Participant), !is.na(Topic), !is.na(condition), !is.na(AOI))
+
+  if (use_speaker) {
+    out <- out %>% dplyr::filter(!is.na(speaker))
+  }
+
+  out <- out %>%
+    dplyr::mutate(
+      Participant = factor(Participant),
+      Topic = factor(Topic),
+      condition = factor(condition),
+      AOI = factor(AOI)
+    )
+
+  if (use_speaker) {
+    out <- out %>% dplyr::mutate(speaker = factor(speaker))
+  }
+
+  safe_plain_df(out)
+}
+
+# =========================================================
+# FORMELN
+# =========================================================
+
+make_formula_aoi <- function(response = "FRT",
+                             use_speaker = FALSE) {
+  rhs <- if (use_speaker) {
+    "condition * speaker + nLetters + (1 | Topic) + (1 | Participant)"
+  } else {
+    "condition + nLetters + (1 | Topic) + (1 | Participant)"
+  }
+
+  as.formula(paste(response, "~", rhs))
+}
+
+# =========================================================
+# FAMILIEN
+# =========================================================
+
+get_glmmtmb_family <- function(family_name) {
+  switch(
+    family_name,
+    gamma_log = Gamma(link = "log"),
+    nbinom2   = glmmTMB::nbinom2(link = "log"),
+    stop("Unbekannte glmmTMB-Familie: ", family_name)
+  )
+}
+
+# =========================================================
+# FIT
+# =========================================================
+
+fit_glmmtmb_capture <- function(df,
+                                formula,
+                                family_name) {
+  warn_texts <- character()
+  msg_texts  <- character()
+
+  fam <- get_glmmtmb_family(family_name)
+
+  fit <- withCallingHandlers(
+    tryCatch(
+      glmmTMB::glmmTMB(
+        formula = formula,
+        data = droplevels(df),
+        family = fam
+      ),
+      error = function(e) e
+    ),
+    warning = function(w) {
+      warn_texts <<- c(warn_texts, conditionMessage(w))
+      invokeRestart("muffleWarning")
+    },
+    message = function(m) {
+      msg_texts <<- c(msg_texts, conditionMessage(m))
+      invokeRestart("muffleMessage")
+    }
+  )
+
+  if (inherits(fit, "error")) {
+    return(list(
+      fit = NULL,
+      fit_info = tibble(
+        fit_ok = FALSE,
+        fit_error = conditionMessage(fit),
+        fit_warning_text = collapse_unique(warn_texts),
+        fit_message_text = collapse_unique(msg_texts),
+        n_fit_warning_messages = length(unique(stats::na.omit(warn_texts))),
+        n_fit_messages = length(unique(stats::na.omit(msg_texts))),
+        fit_nonposdef_hessian = NA,
+        fit_nonzero_convergence = NA,
+        fit_singular = NA
+      )
+    ))
+  }
+
+  fit_nonposdef_hessian <- tryCatch(
+    !isTRUE(fit$sdr$pdHess),
+    error = function(e) NA
+  )
+
+  fit_nonzero_convergence <- tryCatch(
+    {
+      conv <- fit$fit$convergence
+      if (is.null(conv)) NA else conv != 0
+    },
+    error = function(e) NA
+  )
+
+  list(
+    fit = fit,
+    fit_info = tibble(
+      fit_ok = TRUE,
+      fit_error = NA_character_,
+      fit_warning_text = collapse_unique(warn_texts),
+      fit_message_text = collapse_unique(msg_texts),
+      n_fit_warning_messages = length(unique(stats::na.omit(warn_texts))),
+      n_fit_messages = length(unique(stats::na.omit(msg_texts))),
+      fit_nonposdef_hessian = fit_nonposdef_hessian,
+      fit_nonzero_convergence = fit_nonzero_convergence,
+      fit_singular = NA
+    )
+  )
+}
+
+fit_lmer_capture <- function(df,
+                             formula) {
+  warn_texts <- character()
+  msg_texts  <- character()
+
+  fit <- withCallingHandlers(
+    tryCatch(
+      lme4::lmer(
+        formula = formula,
+        data = droplevels(df),
+        REML = FALSE,
+        control = lme4::lmerControl(
+          check.rankX = "message+drop.cols",
+          check.conv.singular = "message",
+          check.conv.hess = "warning",
+          check.conv.grad = "warning"
+        )
+      ),
+      error = function(e) e
+    ),
+    warning = function(w) {
+      warn_texts <<- c(warn_texts, conditionMessage(w))
+      invokeRestart("muffleWarning")
+    },
+    message = function(m) {
+      msg_texts <<- c(msg_texts, conditionMessage(m))
+      invokeRestart("muffleMessage")
+    }
+  )
+
+  if (inherits(fit, "error")) {
+    return(list(
+      fit = NULL,
+      fit_info = tibble(
+        fit_ok = FALSE,
+        fit_error = conditionMessage(fit),
+        fit_warning_text = collapse_unique(warn_texts),
+        fit_message_text = collapse_unique(msg_texts),
+        n_fit_warning_messages = length(unique(stats::na.omit(warn_texts))),
+        n_fit_messages = length(unique(stats::na.omit(msg_texts))),
+        fit_nonposdef_hessian = NA,
+        fit_nonzero_convergence = NA,
+        fit_singular = NA
+      )
+    ))
+  }
+
+  fit_singular <- lme4::isSingular(fit, tol = 1e-5)
+
+  list(
+    fit = fit,
+    fit_info = tibble(
+      fit_ok = TRUE,
+      fit_error = NA_character_,
+      fit_warning_text = collapse_unique(warn_texts),
+      fit_message_text = collapse_unique(msg_texts),
+      n_fit_warning_messages = length(unique(stats::na.omit(warn_texts))),
+      n_fit_messages = length(unique(stats::na.omit(msg_texts))),
+      fit_nonposdef_hessian = NA,
+      fit_nonzero_convergence = NA,
+      fit_singular = fit_singular
+    )
+  )
+}
+
+fit_model_capture <- function(df,
+                              formula,
+                              family_name) {
+  if (family_name == "normal") {
+    fit_lmer_capture(df = df, formula = formula)
+  } else {
+    fit_glmmtmb_capture(df = df, formula = formula, family_name = family_name)
+  }
+}
+
+# =========================================================
+# PREDICT
+# =========================================================
+
+predict_model_capture <- function(fit_obj,
+                                  newdata,
+                                  family_name) {
+  warn_texts <- character()
+  msg_texts  <- character()
+
+  pred <- withCallingHandlers(
+    tryCatch(
+      {
+        if (family_name == "normal") {
+          stats::predict(
+            fit_obj,
+            newdata = droplevels(newdata),
+            re.form = NULL,
+            allow.new.levels = TRUE
+          )
+        } else {
+          stats::predict(
+            fit_obj,
+            newdata = droplevels(newdata),
+            type = "response",
+            allow.new.levels = TRUE
+          )
+        }
+      },
+      error = function(e) e
+    ),
+    warning = function(w) {
+      warn_texts <<- c(warn_texts, conditionMessage(w))
+      invokeRestart("muffleWarning")
+    },
+    message = function(m) {
+      msg_texts <<- c(msg_texts, conditionMessage(m))
+      invokeRestart("muffleMessage")
+    }
+  )
+
+  if (inherits(pred, "error")) {
+    return(tibble(
+      pred_ok = FALSE,
+      pred_error = conditionMessage(pred),
+      pred_warning_text = collapse_unique(warn_texts),
+      pred_message_text = collapse_unique(msg_texts),
+      n_pred_warning_messages = length(unique(stats::na.omit(warn_texts))),
+      n_pred_messages = length(unique(stats::na.omit(msg_texts))),
+      rmse = NA_real_,
+      mae = NA_real_
+    ))
+  }
+
+  pred_vals <- as.numeric(pred)
+  obs <- newdata$FRT
+
+  tibble(
+    pred_ok = TRUE,
+    pred_error = NA_character_,
+    pred_warning_text = collapse_unique(warn_texts),
+    pred_message_text = collapse_unique(msg_texts),
+    n_pred_warning_messages = length(unique(stats::na.omit(warn_texts))),
+    n_pred_messages = length(unique(stats::na.omit(msg_texts))),
+    rmse = rmse_vec(obs, pred_vals),
+    mae = mae_vec(obs, pred_vals)
+  )
+}
+
+# =========================================================
+# TOPIC-LOO PRO EXPERIMENT × AOI × FAMILY × HOLDOUT TOPIC
+# =========================================================
+
+run_topicloo_one_experiment <- function(df,
+                                        exp_name,
+                                        response = "FRT",
+                                        use_speaker = FALSE,
+                                        verbose = TRUE) {
+  dat <- prep_topicloo_data(df, response, use_speaker)
+
+  aois <- levels(droplevels(dat$AOI))
+
+  purrr::map_dfr(family_names, function(fam_i) {
+    purrr::map_dfr(aois, function(aoi_i) {
+      dat_aoi <- dat %>%
+        dplyr::filter(AOI == aoi_i)
+
+      topics <- levels(droplevels(dat_aoi$Topic))
+
+      purrr::map_dfr(topics, function(topic_holdout) {
+        dat_train <- dat_aoi %>% dplyr::filter(Topic != topic_holdout)
+        dat_test  <- dat_aoi %>% dplyr::filter(Topic == topic_holdout)
+
+        formula_i <- make_formula_aoi(
+          response = response,
+          use_speaker = use_speaker
+        )
+
+        progress_note(
+          "[TOPIC-LOO] exp=", exp_name,
+          " family=", fam_i,
+          " AOI=", aoi_i,
+          " holdout_topic=", topic_holdout,
+          " n_train=", nrow(dat_train),
+          " n_test=", nrow(dat_test),
+          verbose = verbose
+        )
+
+        if (nrow(dat_train) == 0 || nrow(dat_test) == 0) {
+          return(tibble(
+            experiment = exp_name,
+            family_name = fam_i,
+            AOI = as.character(aoi_i),
+            holdout_topic = as.character(topic_holdout),
+            n_train = nrow(dat_train),
+            n_test = nrow(dat_test),
+            fit_ok = FALSE,
+            fit_error = "empty_train_or_test_fold",
+            fit_warning_text = NA_character_,
+            fit_message_text = NA_character_,
+            n_fit_warning_messages = NA_real_,
+            n_fit_messages = NA_real_,
+            fit_nonposdef_hessian = NA,
+            fit_nonzero_convergence = NA,
+            fit_singular = NA,
+            pred_ok = FALSE,
+            pred_error = NA_character_,
+            pred_warning_text = NA_character_,
+            pred_message_text = NA_character_,
+            n_pred_warning_messages = NA_real_,
+            n_pred_messages = NA_real_,
+            rmse = NA_real_,
+            mae = NA_real_
+          ))
+        }
+
+        fit_res <- fit_model_capture(
+          df = dat_train,
+          formula = formula_i,
+          family_name = fam_i
+        )
+
+        pred_info <- if (isTRUE(fit_res$fit_info$fit_ok[1])) {
+          predict_model_capture(
+            fit_obj = fit_res$fit,
+            newdata = dat_test,
+            family_name = fam_i
+          )
+        } else {
+          tibble(
+            pred_ok = FALSE,
+            pred_error = NA_character_,
+            pred_warning_text = NA_character_,
+            pred_message_text = NA_character_,
+            n_pred_warning_messages = NA_real_,
+            n_pred_messages = NA_real_,
+            rmse = NA_real_,
+            mae = NA_real_
+          )
+        }
+
+        tibble(
+          experiment = exp_name,
+          family_name = fam_i,
+          AOI = as.character(aoi_i),
+          holdout_topic = as.character(topic_holdout),
+          n_train = nrow(dat_train),
+          n_test = nrow(dat_test)
+        ) %>%
+          dplyr::bind_cols(
+            fit_res$fit_info,
+            pred_info
+          )
+      })
+    })
+  })
+}
+
+# =========================================================
+# ÜBER ALLE EXPERIMENTE
+# =========================================================
+
+run_topicloo_all <- function(dfs,
+                             response = "FRT",
+                             experiments_with_speaker = c("n_bed", "n_ein", "CS"),
+                             verbose = TRUE) {
+  loo_all <- purrr::imap_dfr(dfs, function(df, exp_name) {
+    run_topicloo_one_experiment(
+      df = df,
+      exp_name = exp_name,
+      response = response,
+      use_speaker = exp_name %in% experiments_with_speaker,
+      verbose = verbose
+    )
+  })
+
+  fit_summary <- loo_all %>%
+    dplyr::group_by(experiment, family_name) %>%
+    dplyr::summarise(
+      n_folds = dplyr::n(),
+      n_fit_failed = sum(fit_ok %in% FALSE, na.rm = TRUE),
+      n_nonposdef_hessian = sum(fit_nonposdef_hessian %in% TRUE, na.rm = TRUE),
+      n_nonzero_convergence = sum(fit_nonzero_convergence %in% TRUE, na.rm = TRUE),
+      n_singular = sum(fit_singular %in% TRUE, na.rm = TRUE),
+      n_fits_with_warning = sum(n_fit_warning_messages > 0, na.rm = TRUE),
+      total_fit_warning_messages = sum(n_fit_warning_messages, na.rm = TRUE),
+      .groups = "drop"
+    )
+
+  fit_overall <- loo_all %>%
+    dplyr::group_by(family_name) %>%
+    dplyr::summarise(
+      n_folds = dplyr::n(),
+      n_fit_failed = sum(fit_ok %in% FALSE, na.rm = TRUE),
+      n_nonposdef_hessian = sum(fit_nonposdef_hessian %in% TRUE, na.rm = TRUE),
+      n_nonzero_convergence = sum(fit_nonzero_convergence %in% TRUE, na.rm = TRUE),
+      n_singular = sum(fit_singular %in% TRUE, na.rm = TRUE),
+      n_fits_with_warning = sum(n_fit_warning_messages > 0, na.rm = TRUE),
+      total_fit_warning_messages = sum(n_fit_warning_messages, na.rm = TRUE),
+      .groups = "drop"
+    )
+
+  prediction_summary <- loo_all %>%
+    dplyr::group_by(experiment, family_name) %>%
+    dplyr::summarise(
+      n_folds = dplyr::n(),
+      n_pred_failed = sum(pred_ok %in% FALSE, na.rm = TRUE),
+      n_preds_with_warning = sum(n_pred_warning_messages > 0, na.rm = TRUE),
+      total_pred_warning_messages = sum(n_pred_warning_messages, na.rm = TRUE),
+      mean_rmse = mean(rmse, na.rm = TRUE),
+      median_rmse = median(rmse, na.rm = TRUE),
+      mean_mae = mean(mae, na.rm = TRUE),
+      median_mae = median(mae, na.rm = TRUE),
+      .groups = "drop"
+    )
+
+  prediction_overall <- loo_all %>%
+    dplyr::group_by(family_name) %>%
+    dplyr::summarise(
+      n_folds = dplyr::n(),
+      n_pred_failed = sum(pred_ok %in% FALSE, na.rm = TRUE),
+      n_preds_with_warning = sum(n_pred_warning_messages > 0, na.rm = TRUE),
+      total_pred_warning_messages = sum(n_pred_warning_messages, na.rm = TRUE),
+      mean_rmse = mean(rmse, na.rm = TRUE),
+      median_rmse = median(rmse, na.rm = TRUE),
+      mean_mae = mean(mae, na.rm = TRUE),
+      median_mae = median(mae, na.rm = TRUE),
+      .groups = "drop"
+    )
+
+  list(
+    loo_all = loo_all,
+    fit_summary = fit_summary,
+    fit_overall = fit_overall,
+    prediction_summary = prediction_summary,
+    prediction_overall = prediction_overall
+  )
+}
+
+# =========================================================
+# AUSFÜHREN
+# =========================================================
+
+res_topicloo <- run_topicloo_all(
+  dfs = dfs,
+  response = "FRT",
+  experiments_with_speaker = experiments_with_speaker,
+  verbose = TRUE
+)
+
+# =========================================================
+# OUTPUTS
+# =========================================================
+
+#round_df_4(res_topicloo$loo_all)
+round_df_4(res_topicloo$fit_summary)
+round_df_4(res_topicloo$fit_overall)
+round_df_4(res_topicloo$prediction_summary)
+round_df_4(res_topicloo$prediction_overall)
+```
+Wir sehen: Prädiktiv schneidet Normal meist leicht besser ab. 
+
+
+Wir beachten noch die DHARMa Residuuen, um zu verstehen, wie die jeweiligen Verteilungen sich verhalten.
+
+FRT DHARMa checks
+```{r}
+library(dplyr)
+library(tidyr)
+library(purrr)
+library(tibble)
+library(glmmTMB)
+library(lme4)
+library(DHARMa)
+library(ggplot2)
+
+# =========================================================
+# SETTINGS
+# =========================================================
+
+set.seed(123)
+
+dfs <- list(
+  c_bed = c_bed,
+  c_ein = c_ein,
+  n_bed = n_bed,
+  n_ein = n_ein,
+  CS    = CS
+)
+
+datasets_with_speaker_interaction <- c("n_bed", "n_ein", "CS")
+
+families_to_compare <- c(
+  "gamma",
+  "negbinomial",
+  "normal"
+)
+
+# =========================================================
+# HILFSFUNKTIONEN
+# =========================================================
+
+safe_plain_df <- function(df) {
+  out <- as.data.frame(df, stringsAsFactors = FALSE)
+  rownames(out) <- NULL
+  out
+}
+
+round_df_4 <- function(df) {
+  df %>%
+    dplyr::mutate(dplyr::across(where(is.numeric), ~ round(.x, 4)))
+}
+
+collapse_unique <- function(x) {
+  x <- unique(stats::na.omit(x))
+  if (length(x) == 0) return(NA_character_)
+  paste(x, collapse = " | ")
+}
+
+safe_cor <- function(x, y) {
+  keep <- is.finite(x) & is.finite(y)
+  x <- x[keep]
+  y <- y[keep]
+
+  if (length(x) < 3) return(NA_real_)
+  suppressWarnings(stats::cor(x, y))
+}
+
+safe_test_p <- function(test_obj) {
+  if (is.null(test_obj)) return(NA_real_)
+  if (!("p.value" %in% names(test_obj))) return(NA_real_)
+  p <- test_obj$p.value
+  if (is.null(p) || length(p) == 0) return(NA_real_)
+  as.numeric(p[1])
+}
+
+safe_test_stat <- function(test_obj) {
+  if (is.null(test_obj)) return(NA_real_)
+  if (!("statistic" %in% names(test_obj))) return(NA_real_)
+  s <- test_obj$statistic
+  if (is.null(s) || length(s) == 0) return(NA_real_)
+  as.numeric(s[1])
+}
+
+label_family <- function(x) {
+  factor(
+    x,
+    levels = c("gamma", "negbinomial", "normal"),
+    labels = c("Gamma", "NegBinomial", "Normal")
+  )
+}
+
+get_fixed_formula <- function(dataset_name) {
+  if (dataset_name %in% datasets_with_speaker_interaction) {
+    "condition * speaker + nLetters"
+  } else {
+    "condition + nLetters"
+  }
+}
+
+# =========================================================
+# DATEN
+# Erwartet:
+# FRT, nLetters, Participant, Topic, condition, AOI
+# und bei n_bed / n_ein / CS zusätzlich speaker
+# =========================================================
+
+prep_frt_residual_data <- function(df, dataset_name) {
+  needed <- c("FRT", "nLetters", "Participant", "Topic", "condition", "AOI")
+  if (dataset_name %in% datasets_with_speaker_interaction) {
+    needed <- c(needed, "speaker")
+  }
+
+  missing_cols <- setdiff(needed, names(df))
+  if (length(missing_cols) > 0) {
+    stop("Fehlende Variablen: ", paste(missing_cols, collapse = ", "))
+  }
+
+  out <- df %>%
+    dplyr::filter(!is.na(FRT), FRT > 0) %>%
+    dplyr::filter(!is.na(nLetters)) %>%
+    dplyr::filter(!is.na(Participant), !is.na(Topic), !is.na(condition), !is.na(AOI)) %>%
+    dplyr::mutate(
+      Participant = factor(Participant),
+      Topic = factor(Topic),
+      condition = factor(condition),
+      AOI = factor(AOI)
+    )
+
+  if (dataset_name %in% datasets_with_speaker_interaction) {
+    out <- out %>%
+      dplyr::filter(!is.na(speaker)) %>%
+      dplyr::mutate(speaker = factor(speaker))
+  }
+
+  safe_plain_df(out)
+}
+
+# =========================================================
+# FORMEL
+# =========================================================
+
+make_formula_frt <- function(dataset_name, response = "FRT") {
+  fixed_part <- get_fixed_formula(dataset_name)
+
+  as.formula(
+    paste(
+      response,
+      "~",
+      fixed_part,
+      "+ (1 | Topic) + (1 | Participant)"
+    )
+  )
+}
+
+# =========================================================
+# FIT MIT FEHLER- UND WARNING-CATCHING
+# =========================================================
+
+fit_one_model <- function(dat, dataset_name, family_name) {
+  formula_i <- make_formula_frt(dataset_name, response = "FRT")
+
+  warns <- character()
+  msgs  <- character()
+
+  if (family_name == "normal") {
+    fit <- withCallingHandlers(
+      tryCatch(
+        lme4::lmer(
+          formula = formula_i,
+          data = dat,
+          REML = FALSE,
+          control = lme4::lmerControl(
+            check.rankX = "message+drop.cols",
+            check.conv.singular = "message",
+            check.conv.hess = "warning",
+            check.conv.grad = "warning"
+          )
+        ),
+        error = function(e) e
+      ),
+      warning = function(w) {
+        warns <<- c(warns, conditionMessage(w))
+        invokeRestart("muffleWarning")
+      },
+      message = function(m) {
+        msgs <<- c(msgs, conditionMessage(m))
+        invokeRestart("muffleMessage")
+      }
+    )
+  } else {
+    fam <- switch(
+      family_name,
+      gamma       = Gamma(link = "log"),
+      negbinomial = nbinom2(link = "log"),
+      stop("Unknown family: ", family_name)
+    )
+
+    fit <- withCallingHandlers(
+      tryCatch(
+        glmmTMB::glmmTMB(
+          formula = formula_i,
+          data = dat,
+          family = fam
+        ),
+        error = function(e) e
+      ),
+      warning = function(w) {
+        warns <<- c(warns, conditionMessage(w))
+        invokeRestart("muffleWarning")
+      },
+      message = function(m) {
+        msgs <<- c(msgs, conditionMessage(m))
+        invokeRestart("muffleMessage")
+      }
+    )
+  }
+
+  if (inherits(fit, "error")) {
+    fit_tbl <- tibble(
+      fit_ok = FALSE,
+      fit_error = conditionMessage(fit),
+      fit_warning_text = collapse_unique(warns),
+      fit_message_text = collapse_unique(msgs),
+      n_warning_messages = length(unique(stats::na.omit(warns))),
+      n_messages = length(unique(stats::na.omit(msgs))),
+      fit_nonposdef_hessian = NA,
+      fit_nonzero_convergence = NA,
+      fit_singular = NA,
+      aic = NA_real_,
+      bic = NA_real_,
+      logLik = NA_real_
+    )
+
+    return(list(
+      fit_tbl = fit_tbl,
+      fit_obj = NULL,
+      formula = formula_i
+    ))
+  }
+
+  if (family_name == "normal") {
+    fit_tbl <- tibble(
+      fit_ok = TRUE,
+      fit_error = NA_character_,
+      fit_warning_text = collapse_unique(warns),
+      fit_message_text = collapse_unique(msgs),
+      n_warning_messages = length(unique(stats::na.omit(warns))),
+      n_messages = length(unique(stats::na.omit(msgs))),
+      fit_nonposdef_hessian = NA,
+      fit_nonzero_convergence = NA,
+      fit_singular = tryCatch(lme4::isSingular(fit, tol = 1e-5), error = function(e) NA),
+      aic = tryCatch(as.numeric(AIC(fit)), error = function(e) NA_real_),
+      bic = tryCatch(as.numeric(BIC(fit)), error = function(e) NA_real_),
+      logLik = tryCatch(as.numeric(logLik(fit)), error = function(e) NA_real_)
+    )
+  } else {
+    fit_tbl <- tibble(
+      fit_ok = TRUE,
+      fit_error = NA_character_,
+      fit_warning_text = collapse_unique(warns),
+      fit_message_text = collapse_unique(msgs),
+      n_warning_messages = length(unique(stats::na.omit(warns))),
+      n_messages = length(unique(stats::na.omit(msgs))),
+      fit_nonposdef_hessian = tryCatch(!isTRUE(fit$sdr$pdHess), error = function(e) NA),
+      fit_nonzero_convergence = tryCatch({
+        conv <- fit$fit$convergence
+        if (is.null(conv)) NA else conv != 0
+      }, error = function(e) NA),
+      fit_singular = NA,
+      aic = tryCatch(as.numeric(AIC(fit)), error = function(e) NA_real_),
+      bic = tryCatch(as.numeric(BIC(fit)), error = function(e) NA_real_),
+      logLik = tryCatch(as.numeric(logLik(fit)), error = function(e) NA_real_)
+    )
+  }
+
+  list(
+    fit_tbl = fit_tbl,
+    fit_obj = fit,
+    formula = formula_i
+  )
+}
+
+# =========================================================
+# DHARMa-ANALYSE
+# =========================================================
+
+analyse_dharma_frt <- function(fit_obj, df, nsim = 2000) {
+  simres <- DHARMa::simulateResiduals(
+    fittedModel = fit_obj,
+    n = nsim,
+    plot = FALSE
+  )
+
+  dharma_res <- simres$scaledResiduals
+  fitted_vals <- tryCatch(
+    predict(fit_obj, type = "response"),
+    error = function(e) rep(NA_real_, nrow(df))
+  )
+
+  uniform_test <- tryCatch(
+    DHARMa::testUniformity(simres),
+    error = function(e) NULL
+  )
+
+  dispersion_test <- tryCatch(
+    DHARMa::testDispersion(simres),
+    error = function(e) NULL
+  )
+
+  outlier_test <- tryCatch(
+    DHARMa::testOutliers(simres),
+    error = function(e) NULL
+  )
+
+  residual_summary <- tibble(
+    n_obs_residuals = nrow(df),
+    residual_mean = mean(dharma_res, na.rm = TRUE),
+    residual_median = median(dharma_res, na.rm = TRUE),
+    residual_sd = stats::sd(dharma_res, na.rm = TRUE),
+    residual_min = min(dharma_res, na.rm = TRUE),
+    residual_max = max(dharma_res, na.rm = TRUE),
+    prop_resid_lt_0_05 = mean(dharma_res < 0.05, na.rm = TRUE),
+    prop_resid_gt_0_95 = mean(dharma_res > 0.95, na.rm = TRUE),
+    cor_resid_fitted = safe_cor(dharma_res, fitted_vals),
+    cor_resid_nLetters = safe_cor(dharma_res, df$nLetters),
+    dharma_uniformity_stat = safe_test_stat(uniform_test),
+    dharma_uniformity_p = safe_test_p(uniform_test),
+    dharma_dispersion_stat = safe_test_stat(dispersion_test),
+    dharma_dispersion_p = safe_test_p(dispersion_test),
+    dharma_outlier_stat = safe_test_stat(outlier_test),
+    dharma_outlier_p = safe_test_p(outlier_test)
+  )
+
+  plot_data <- tibble(
+    fitted = fitted_vals,
+    residual = dharma_res,
+    nLetters = df$nLetters,
+    observed = df$FRT
+  )
+
+  list(
+    simres = simres,
+    residual_summary = residual_summary,
+    plot_data = plot_data,
+    tests = list(
+      uniform_test = uniform_test,
+      dispersion_test = dispersion_test,
+      outlier_test = outlier_test
+    )
+  )
+}
+
+# =========================================================
+# PROBLEMTYP
+# =========================================================
+
+classify_problem_frt_residual <- function(fit_ok,
+                                          fit_nonposdef_hessian,
+                                          fit_nonzero_convergence,
+                                          dharma_uniformity_p,
+                                          dharma_dispersion_p,
+                                          dharma_outlier_p,
+                                          fit_warning_text) {
+  case_when(
+    !isTRUE(fit_ok) ~ "fit_error",
+    isTRUE(fit_nonposdef_hessian) ~ "nonposdef_hessian",
+    isTRUE(fit_nonzero_convergence) ~ "nonzero_convergence",
+    !is.na(dharma_uniformity_p) && dharma_uniformity_p < 0.05 &&
+      !is.na(dharma_dispersion_p) && dharma_dispersion_p < 0.05 ~
+      "uniformity_and_dispersion_signal",
+    !is.na(dharma_uniformity_p) && dharma_uniformity_p < 0.05 ~
+      "uniformity_signal",
+    !is.na(dharma_dispersion_p) && dharma_dispersion_p < 0.05 ~
+      "dispersion_signal",
+    !is.na(dharma_outlier_p) && dharma_outlier_p < 0.05 ~
+      "outlier_signal",
+    !is.na(fit_warning_text) ~ "warning_only",
+    TRUE ~ "none"
+  )
+}
+
+# =========================================================
+# PLOTFUNKTIONEN
+# =========================================================
+
+plot_frt_residuals_vs_fitted <- function(plot_data, dataset_name, aoi_value, family_name, idx) {
+  ggplot(plot_data, aes(x = fitted, y = residual)) +
+    geom_point(alpha = 0.5) +
+    geom_smooth(method = "loess", se = FALSE) +
+    labs(
+      title = paste0("[", idx, "/4] Residuals vs Fitted | ", dataset_name, " | AOI ", aoi_value, " | ", family_name),
+      x = "Fitted values",
+      y = "DHARMa residuals"
+    )
+}
+
+plot_frt_residuals_vs_nLetters <- function(plot_data, dataset_name, aoi_value, family_name, idx) {
+  ggplot(plot_data, aes(x = nLetters, y = residual)) +
+    geom_point(alpha = 0.5) +
+    geom_smooth(method = "loess", se = FALSE) +
+    labs(
+      title = paste0("[", idx, "/4] Residuals vs nLetters | ", dataset_name, " | AOI ", aoi_value, " | ", family_name),
+      x = "nLetters",
+      y = "DHARMa residuals"
+    )
+}
+
+plot_frt_observed_vs_fitted <- function(plot_data, dataset_name, aoi_value, family_name, idx) {
+  ggplot(plot_data, aes(x = fitted, y = observed)) +
+    geom_point(alpha = 0.5) +
+    geom_smooth(method = "loess", se = FALSE) +
+    labs(
+      title = paste0("[", idx, "/4] Observed vs Fitted | ", dataset_name, " | AOI ", aoi_value, " | ", family_name),
+      x = "Fitted values",
+      y = "Observed FRT"
+    )
+}
+
+# =========================================================
+# EIN FIT PRO dataset x AOI x family
+# =========================================================
+
+fit_one_full_case_frt_residual <- function(df_aoi,
+                                           dataset_name,
+                                           aoi_value,
+                                           family_name,
+                                           nsim = 2000) {
+  df_aoi <- droplevels(df_aoi)
+
+  fit_res <- fit_one_model(
+    dat = df_aoi,
+    dataset_name = dataset_name,
+    family_name = family_name
+  )
+
+  fit_info <- fit_res$fit_tbl
+  fit_obj  <- fit_res$fit_obj
+  formula_i <- fit_res$formula
+
+  if (is.null(fit_obj)) {
+    summary_tbl <- tibble(
+      dataset = dataset_name,
+      AOI = as.character(aoi_value),
+      family = family_name,
+      n_obs = nrow(df_aoi),
+      n_topics = dplyr::n_distinct(df_aoi$Topic),
+      n_participants = dplyr::n_distinct(df_aoi$Participant),
+      n_conditions = dplyr::n_distinct(df_aoi$condition),
+      formula = paste(deparse(formula_i), collapse = " ")
+    ) %>%
+      bind_cols(fit_info) %>%
+      mutate(
+        n_obs_residuals = NA_real_,
+        residual_mean = NA_real_,
+        residual_median = NA_real_,
+        residual_sd = NA_real_,
+        residual_min = NA_real_,
+        residual_max = NA_real_,
+        prop_resid_lt_0_05 = NA_real_,
+        prop_resid_gt_0_95 = NA_real_,
+        cor_resid_fitted = NA_real_,
+        cor_resid_nLetters = NA_real_,
+        dharma_uniformity_stat = NA_real_,
+        dharma_uniformity_p = NA_real_,
+        dharma_dispersion_stat = NA_real_,
+        dharma_dispersion_p = NA_real_,
+        dharma_outlier_stat = NA_real_,
+        dharma_outlier_p = NA_real_,
+        problem_type = "fit_error"
+      )
+
+    return(list(
+      summary_tbl = summary_tbl,
+      simres = NULL,
+      plot_data = NULL
+    ))
+  }
+
+  dharma_res <- analyse_dharma_frt(
+    fit_obj = fit_obj,
+    df = df_aoi,
+    nsim = nsim
+  )
+
+  summary_tbl <- tibble(
+    dataset = dataset_name,
+    AOI = as.character(aoi_value),
+    family = family_name,
+    n_obs = nrow(df_aoi),
+    n_topics = dplyr::n_distinct(df_aoi$Topic),
+    n_participants = dplyr::n_distinct(df_aoi$Participant),
+    n_conditions = dplyr::n_distinct(df_aoi$condition),
+    formula = paste(deparse(formula_i), collapse = " ")
+  ) %>%
+    bind_cols(fit_info) %>%
+    bind_cols(dharma_res$residual_summary) %>%
+    mutate(
+      problem_type = classify_problem_frt_residual(
+        fit_ok = fit_ok,
+        fit_nonposdef_hessian = fit_nonposdef_hessian,
+        fit_nonzero_convergence = fit_nonzero_convergence,
+        dharma_uniformity_p = dharma_uniformity_p,
+        dharma_dispersion_p = dharma_dispersion_p,
+        dharma_outlier_p = dharma_outlier_p,
+        fit_warning_text = fit_warning_text
+      )
+    )
+
+  list(
+    summary_tbl = summary_tbl,
+    simres = dharma_res$simres,
+    plot_data = dharma_res$plot_data
+  )
+}
+
+# =========================================================
+# AUTOMATISCHE PLOTAUSGABE
+# =========================================================
+
+print_all_frt_residual_plots <- function(res_obj) {
+  keys <- names(res_obj$plot_data_list)
+
+  for (i in seq_along(keys)) {
+    key <- keys[i]
+    plot_data <- res_obj$plot_data_list[[key]]
+    simres <- res_obj$simres_list[[key]]
+
+    if (is.null(plot_data) || is.null(simres)) next
+
+    parts <- strsplit(key, "__", fixed = TRUE)[[1]]
+    dataset_name <- parts[1]
+    aoi_value <- parts[2]
+    family_name <- parts[3]
+
+    print(plot_frt_residuals_vs_fitted(plot_data, dataset_name, aoi_value, family_name, 1))
+    print(plot_frt_residuals_vs_nLetters(plot_data, dataset_name, aoi_value, family_name, 2))
+    print(plot_frt_observed_vs_fitted(plot_data, dataset_name, aoi_value, family_name, 3))
+
+    graphics::plot(simres)
+    graphics::mtext(
+      text = paste0("[4/4] Standard DHARMa Plot | ", dataset_name, " | AOI ", aoi_value, " | ", family_name),
+      side = 3,
+      line = 1,
+      cex = 1.1,
+      font = 2
+    )
+  }
+}
+
+# =========================================================
+# HAUPTFUNKTION
+# =========================================================
+
+run_frt_residual_analysis <- function(dfs,
+                                      nsim = 2000,
+                                      print_plots = TRUE) {
+  res_list <- list()
+
+  for (dataset_name in names(dfs)) {
+    dat <- prep_frt_residual_data(dfs[[dataset_name]], dataset_name)
+    aois <- levels(droplevels(dat$AOI))
+
+    for (aoi_value in aois) {
+      df_aoi <- dat %>% dplyr::filter(AOI == aoi_value)
+
+      for (family_name in families_to_compare) {
+        key <- paste(dataset_name, aoi_value, family_name, sep = "__")
+
+        res_list[[key]] <- fit_one_full_case_frt_residual(
+          df_aoi = df_aoi,
+          dataset_name = dataset_name,
+          aoi_value = aoi_value,
+          family_name = family_name,
+          nsim = nsim
+        )
+      }
+    }
+  }
+
+  residual_summary <- purrr::map_dfr(res_list, "summary_tbl")
+
+  problem_counts <- residual_summary %>%
+    dplyr::count(family, problem_type, sort = TRUE)
+
+  plot_data_list <- purrr::map(res_list, "plot_data")
+  simres_list <- purrr::map(res_list, "simres")
+
+  out <- list(
+    residual_summary = residual_summary,
+    problem_counts = problem_counts,
+    plot_data_list = plot_data_list,
+    simres_list = simres_list,
+    raw_results = res_list
+  )
+
+  if (isTRUE(print_plots)) {
+    print_all_frt_residual_plots(out)
+  }
+
+  out
+}
+
+# =========================================================
+# AUSFÜHREN
+# =========================================================
+
+res_frt_residuals <- run_frt_residual_analysis(
+  dfs = dfs,
+  nsim = 2000,
+  print_plots = TRUE
+)
+
+# =========================================================
+# TABELLEN
+# =========================================================
+
+#round_df_4(res_frt_residuals$residual_summary)
+```
+```{r}
+round_df_4(res_frt_residuals$problem_counts)
+residual_table_problems_only <- res_frt_residuals$residual_summary %>%
+  dplyr::select(
+    dataset,
+    AOI,
+    family,
+    aic,
+    dharma_uniformity_p,
+    dharma_dispersion_p,
+    dharma_outlier_p,
+    problem_type
+  ) %>%
+  dplyr::filter(problem_type != "none") %>%
+  dplyr::arrange(dataset, AOI, family) %>%
+  round_df_4()
+
+residual_table_problems_only
+```
+Die DHARMa-Diagnostik für FRT ergibt insgesamt kein besonders gutes Bild.
+Von den drei Modellklassen zeigt Negative Binomial noch die meisten unauffälligen Fälle (14), gefolgt von Gamma (12) und Normal (10). Gleichzeitig treten aber bei allen drei Familien in vielen AOIs systematische Residualprobleme auf. Am häufigsten sind Uniformity-Signale, teils zusammen mit Dispersion-Signalen. Gerade in den größeren Datensätzen, besonders bei n_bed, häufen sich diese Auffälligkeiten deutlich. Das spricht dafür, dass keine der getesteten Verteilungen die TRT-Struktur durchgängig sauber erfasst.
+In den kleineren Datensätzen ist das Bild gemischter. Bei c_bed und c_ein gibt es mehrere unauffällige AOIs, aber auch einzelne klare Probleme, etwa Ausreißer- oder Uniformity-Signale. In den größeren Nebrija-Datensätzen verschlechtern sich die Diagnosen deutlich: Für mehrere AOIs in n_bed und n_ein zeigen insbesondere Gamma und Negative Binomial wiederholt kombinierte Uniformity- und Dispersion-Probleme, während das Normalmodell dort oft ebenfalls ein Uniformity-Signal zeigt. Für CS zeigen beide getesteten count-artigen Familien und auch das Normalmodell in mindestens einer AOI klare Uniformity-Probleme.
+Insgesamt heißt das: Es gibt keine Modellklasse, die für TRT über alle Datensätze und AOIs hinweg klar überzeugt. Negative Binomial wirkt rein deskriptiv etwas robuster als Gamma und Normal, aber auch dieses Modell zeigt in mehreren AOIs deutliche Residualprobleme. Eine eindeutige „beste“ Familie lässt sich daher aus den DHARMa-Checks allein nicht ableite
+
+
+*TRT DHARMa checks*
+```{r}
+library(dplyr)
+library(tidyr)
+library(purrr)
+library(tibble)
+library(glmmTMB)
+library(lme4)
+library(DHARMa)
+library(ggplot2)
+
+# =========================================================
+# SETTINGS
+# =========================================================
+
+set.seed(123)
+
+dfs <- list(
+  c_bed = c_bed,
+  c_ein = c_ein,
+  n_bed = n_bed,
+  n_ein = n_ein,
+  CS    = CS
+)
+
+datasets_with_speaker_interaction <- c("n_bed", "n_ein", "CS")
+
+families_to_compare <- c(
+  "gamma",
+  "negbinomial",
+  "normal"
+)
+
+# =========================================================
+# HILFSFUNKTIONEN
+# =========================================================
+
+safe_plain_df <- function(df) {
+  out <- as.data.frame(df, stringsAsFactors = FALSE)
+  rownames(out) <- NULL
+  out
+}
+
+round_df_4 <- function(df) {
+  df %>%
+    dplyr::mutate(dplyr::across(where(is.numeric), ~ round(.x, 4)))
+}
+
+collapse_unique <- function(x) {
+  x <- unique(stats::na.omit(x))
+  if (length(x) == 0) return(NA_character_)
+  paste(x, collapse = " | ")
+}
+
+safe_cor <- function(x, y) {
+  keep <- is.finite(x) & is.finite(y)
+  x <- x[keep]
+  y <- y[keep]
+
+  if (length(x) < 3) return(NA_real_)
+  suppressWarnings(stats::cor(x, y))
+}
+
+safe_test_p <- function(test_obj) {
+  if (is.null(test_obj)) return(NA_real_)
+  if (!("p.value" %in% names(test_obj))) return(NA_real_)
+  p <- test_obj$p.value
+  if (is.null(p) || length(p) == 0) return(NA_real_)
+  as.numeric(p[1])
+}
+
+safe_test_stat <- function(test_obj) {
+  if (is.null(test_obj)) return(NA_real_)
+  if (!("statistic" %in% names(test_obj))) return(NA_real_)
+  s <- test_obj$statistic
+  if (is.null(s) || length(s) == 0) return(NA_real_)
+  as.numeric(s[1])
+}
+
+label_family <- function(x) {
+  factor(
+    x,
+    levels = c("gamma", "negbinomial", "normal"),
+    labels = c("Gamma", "NegBinomial", "Normal")
+  )
+}
+
+get_fixed_formula <- function(dataset_name) {
+  if (dataset_name %in% datasets_with_speaker_interaction) {
+    "condition * speaker + nLetters"
+  } else {
+    "condition + nLetters"
+  }
+}
+
+# =========================================================
+# DATEN
+# Erwartet:
+# TRT, nLetters, Participant, Topic, condition, AOI
+# und bei n_bed / n_ein / CS zusätzlich speaker
+# =========================================================
+
+prep_trt_residual_data <- function(df, dataset_name) {
+  needed <- c("TRT", "nLetters", "Participant", "Topic", "condition", "AOI")
+  if (dataset_name %in% datasets_with_speaker_interaction) {
+    needed <- c(needed, "speaker")
+  }
+
+  missing_cols <- setdiff(needed, names(df))
+  if (length(missing_cols) > 0) {
+    stop("Fehlende Variablen: ", paste(missing_cols, collapse = ", "))
+  }
+
+  out <- df %>%
+    dplyr::filter(!is.na(TRT), TRT > 0) %>%
+    dplyr::filter(!is.na(nLetters)) %>%
+    dplyr::filter(!is.na(Participant), !is.na(Topic), !is.na(condition), !is.na(AOI)) %>%
+    dplyr::mutate(
+      Participant = factor(Participant),
+      Topic = factor(Topic),
+      condition = factor(condition),
+      AOI = factor(AOI)
+    )
+
+  if (dataset_name %in% datasets_with_speaker_interaction) {
+    out <- out %>%
+      dplyr::filter(!is.na(speaker)) %>%
+      dplyr::mutate(speaker = factor(speaker))
+  }
+
+  safe_plain_df(out)
+}
+
+# =========================================================
+# FORMEL
+# =========================================================
+
+make_formula_trt <- function(dataset_name, response = "TRT") {
+  fixed_part <- get_fixed_formula(dataset_name)
+
+  as.formula(
+    paste(
+      response,
+      "~",
+      fixed_part,
+      "+ (1 | Topic) + (1 | Participant)"
+    )
+  )
+}
+
+# =========================================================
+# FIT MIT FEHLER- UND WARNING-CATCHING
+# =========================================================
+
+fit_one_model_trt <- function(dat, dataset_name, family_name) {
+  formula_i <- make_formula_trt(dataset_name, response = "TRT")
+
+  warns <- character()
+  msgs  <- character()
+
+  if (family_name == "normal") {
+    fit <- withCallingHandlers(
+      tryCatch(
+        lme4::lmer(
+          formula = formula_i,
+          data = dat,
+          REML = FALSE,
+          control = lme4::lmerControl(
+            check.rankX = "message+drop.cols",
+            check.conv.singular = "message",
+            check.conv.hess = "warning",
+            check.conv.grad = "warning"
+          )
+        ),
+        error = function(e) e
+      ),
+      warning = function(w) {
+        warns <<- c(warns, conditionMessage(w))
+        invokeRestart("muffleWarning")
+      },
+      message = function(m) {
+        msgs <<- c(msgs, conditionMessage(m))
+        invokeRestart("muffleMessage")
+      }
+    )
+  } else {
+    fam <- switch(
+      family_name,
+      gamma       = Gamma(link = "log"),
+      negbinomial = nbinom2(link = "log"),
+      stop("Unknown family: ", family_name)
+    )
+
+    fit <- withCallingHandlers(
+      tryCatch(
+        glmmTMB::glmmTMB(
+          formula = formula_i,
+          data = dat,
+          family = fam
+        ),
+        error = function(e) e
+      ),
+      warning = function(w) {
+        warns <<- c(warns, conditionMessage(w))
+        invokeRestart("muffleWarning")
+      },
+      message = function(m) {
+        msgs <<- c(msgs, conditionMessage(m))
+        invokeRestart("muffleMessage")
+      }
+    )
+  }
+
+  if (inherits(fit, "error")) {
+    fit_tbl <- tibble(
+      fit_ok = FALSE,
+      fit_error = conditionMessage(fit),
+      fit_warning_text = collapse_unique(warns),
+      fit_message_text = collapse_unique(msgs),
+      n_warning_messages = length(unique(stats::na.omit(warns))),
+      n_messages = length(unique(stats::na.omit(msgs))),
+      fit_nonposdef_hessian = NA,
+      fit_nonzero_convergence = NA,
+      fit_singular = NA,
+      aic = NA_real_,
+      bic = NA_real_,
+      logLik = NA_real_
+    )
+
+    return(list(
+      fit_tbl = fit_tbl,
+      fit_obj = NULL,
+      formula = formula_i
+    ))
+  }
+
+  if (family_name == "normal") {
+    fit_tbl <- tibble(
+      fit_ok = TRUE,
+      fit_error = NA_character_,
+      fit_warning_text = collapse_unique(warns),
+      fit_message_text = collapse_unique(msgs),
+      n_warning_messages = length(unique(stats::na.omit(warns))),
+      n_messages = length(unique(stats::na.omit(msgs))),
+      fit_nonposdef_hessian = NA,
+      fit_nonzero_convergence = NA,
+      fit_singular = tryCatch(lme4::isSingular(fit, tol = 1e-5), error = function(e) NA),
+      aic = tryCatch(as.numeric(AIC(fit)), error = function(e) NA_real_),
+      bic = tryCatch(as.numeric(BIC(fit)), error = function(e) NA_real_),
+      logLik = tryCatch(as.numeric(logLik(fit)), error = function(e) NA_real_)
+    )
+  } else {
+    fit_tbl <- tibble(
+      fit_ok = TRUE,
+      fit_error = NA_character_,
+      fit_warning_text = collapse_unique(warns),
+      fit_message_text = collapse_unique(msgs),
+      n_warning_messages = length(unique(stats::na.omit(warns))),
+      n_messages = length(unique(stats::na.omit(msgs))),
+      fit_nonposdef_hessian = tryCatch(!isTRUE(fit$sdr$pdHess), error = function(e) NA),
+      fit_nonzero_convergence = tryCatch({
+        conv <- fit$fit$convergence
+        if (is.null(conv)) NA else conv != 0
+      }, error = function(e) NA),
+      fit_singular = NA,
+      aic = tryCatch(as.numeric(AIC(fit)), error = function(e) NA_real_),
+      bic = tryCatch(as.numeric(BIC(fit)), error = function(e) NA_real_),
+      logLik = tryCatch(as.numeric(logLik(fit)), error = function(e) NA_real_)
+    )
+  }
+
+  list(
+    fit_tbl = fit_tbl,
+    fit_obj = fit,
+    formula = formula_i
+  )
+}
+
+# =========================================================
+# DHARMa-ANALYSE
+# =========================================================
+
+analyse_dharma_trt <- function(fit_obj, df, nsim = 2000) {
+  simres <- DHARMa::simulateResiduals(
+    fittedModel = fit_obj,
+    n = nsim,
+    plot = FALSE
+  )
+
+  dharma_res <- simres$scaledResiduals
+  fitted_vals <- tryCatch(
+    predict(fit_obj, type = "response"),
+    error = function(e) rep(NA_real_, nrow(df))
+  )
+
+  uniform_test <- tryCatch(
+    DHARMa::testUniformity(simres),
+    error = function(e) NULL
+  )
+
+  dispersion_test <- tryCatch(
+    DHARMa::testDispersion(simres),
+    error = function(e) NULL
+  )
+
+  outlier_test <- tryCatch(
+    DHARMa::testOutliers(simres),
+    error = function(e) NULL
+  )
+
+  residual_summary <- tibble(
+    n_obs_residuals = nrow(df),
+    residual_mean = mean(dharma_res, na.rm = TRUE),
+    residual_median = median(dharma_res, na.rm = TRUE),
+    residual_sd = stats::sd(dharma_res, na.rm = TRUE),
+    residual_min = min(dharma_res, na.rm = TRUE),
+    residual_max = max(dharma_res, na.rm = TRUE),
+    prop_resid_lt_0_05 = mean(dharma_res < 0.05, na.rm = TRUE),
+    prop_resid_gt_0_95 = mean(dharma_res > 0.95, na.rm = TRUE),
+    cor_resid_fitted = safe_cor(dharma_res, fitted_vals),
+    cor_resid_nLetters = safe_cor(dharma_res, df$nLetters),
+    dharma_uniformity_stat = safe_test_stat(uniform_test),
+    dharma_uniformity_p = safe_test_p(uniform_test),
+    dharma_dispersion_stat = safe_test_stat(dispersion_test),
+    dharma_dispersion_p = safe_test_p(dispersion_test),
+    dharma_outlier_stat = safe_test_stat(outlier_test),
+    dharma_outlier_p = safe_test_p(outlier_test)
+  )
+
+  plot_data <- tibble(
+    fitted = fitted_vals,
+    residual = dharma_res,
+    nLetters = df$nLetters,
+    observed = df$TRT
+  )
+
+  list(
+    simres = simres,
+    residual_summary = residual_summary,
+    plot_data = plot_data
+  )
+}
+
+# =========================================================
+# PROBLEMTYP
+# =========================================================
+
+classify_problem_trt_residual <- function(fit_ok,
+                                          fit_nonposdef_hessian,
+                                          fit_nonzero_convergence,
+                                          dharma_uniformity_p,
+                                          dharma_dispersion_p,
+                                          dharma_outlier_p,
+                                          fit_warning_text) {
+  case_when(
+    !isTRUE(fit_ok) ~ "fit_error",
+    isTRUE(fit_nonposdef_hessian) ~ "nonposdef_hessian",
+    isTRUE(fit_nonzero_convergence) ~ "nonzero_convergence",
+    !is.na(dharma_uniformity_p) && dharma_uniformity_p < 0.05 &&
+      !is.na(dharma_dispersion_p) && dharma_dispersion_p < 0.05 ~
+      "uniformity_and_dispersion_signal",
+    !is.na(dharma_uniformity_p) && dharma_uniformity_p < 0.05 ~
+      "uniformity_signal",
+    !is.na(dharma_dispersion_p) && dharma_dispersion_p < 0.05 ~
+      "dispersion_signal",
+    !is.na(dharma_outlier_p) && dharma_outlier_p < 0.05 ~
+      "outlier_signal",
+    !is.na(fit_warning_text) ~ "warning_only",
+    TRUE ~ "none"
+  )
+}
+
+# =========================================================
+# PLOTFUNKTIONEN
+# =========================================================
+
+plot_trt_residuals_vs_fitted <- function(plot_data, dataset_name, aoi_value, family_name, idx) {
+  ggplot(plot_data, aes(x = fitted, y = residual)) +
+    geom_point(alpha = 0.5) +
+    geom_smooth(method = "loess", se = FALSE) +
+    labs(
+      title = paste0("[", idx, "/4] TRT Residuals vs Fitted | ", dataset_name, " | AOI ", aoi_value, " | ", family_name),
+      x = "Fitted values",
+      y = "DHARMa residuals"
+    )
+}
+
+plot_trt_residuals_vs_nLetters <- function(plot_data, dataset_name, aoi_value, family_name, idx) {
+  ggplot(plot_data, aes(x = nLetters, y = residual)) +
+    geom_point(alpha = 0.5) +
+    geom_smooth(method = "loess", se = FALSE) +
+    labs(
+      title = paste0("[", idx, "/4] TRT Residuals vs nLetters | ", dataset_name, " | AOI ", aoi_value, " | ", family_name),
+      x = "nLetters",
+      y = "DHARMa residuals"
+    )
+}
+
+plot_trt_observed_vs_fitted <- function(plot_data, dataset_name, aoi_value, family_name, idx) {
+  ggplot(plot_data, aes(x = fitted, y = observed)) +
+    geom_point(alpha = 0.5) +
+    geom_smooth(method = "loess", se = FALSE) +
+    labs(
+      title = paste0("[", idx, "/4] TRT Observed vs Fitted | ", dataset_name, " | AOI ", aoi_value, " | ", family_name),
+      x = "Fitted values",
+      y = "Observed TRT"
+    )
+}
+
+# =========================================================
+# EIN FIT PRO dataset x AOI x family
+# =========================================================
+
+fit_one_full_case_trt_residual <- function(df_aoi,
+                                           dataset_name,
+                                           aoi_value,
+                                           family_name,
+                                           nsim = 2000) {
+  df_aoi <- droplevels(df_aoi)
+
+  fit_res <- fit_one_model_trt(
+    dat = df_aoi,
+    dataset_name = dataset_name,
+    family_name = family_name
+  )
+
+  fit_info <- fit_res$fit_tbl
+  fit_obj  <- fit_res$fit_obj
+  formula_i <- fit_res$formula
+
+  if (is.null(fit_obj)) {
+    summary_tbl <- tibble(
+      dataset = dataset_name,
+      AOI = as.character(aoi_value),
+      family = family_name,
+      n_obs = nrow(df_aoi),
+      n_topics = dplyr::n_distinct(df_aoi$Topic),
+      n_participants = dplyr::n_distinct(df_aoi$Participant),
+      n_conditions = dplyr::n_distinct(df_aoi$condition),
+      formula = paste(deparse(formula_i), collapse = " ")
+    ) %>%
+      bind_cols(fit_info) %>%
+      mutate(
+        n_obs_residuals = NA_real_,
+        residual_mean = NA_real_,
+        residual_median = NA_real_,
+        residual_sd = NA_real_,
+        residual_min = NA_real_,
+        residual_max = NA_real_,
+        prop_resid_lt_0_05 = NA_real_,
+        prop_resid_gt_0_95 = NA_real_,
+        cor_resid_fitted = NA_real_,
+        cor_resid_nLetters = NA_real_,
+        dharma_uniformity_stat = NA_real_,
+        dharma_uniformity_p = NA_real_,
+        dharma_dispersion_stat = NA_real_,
+        dharma_dispersion_p = NA_real_,
+        dharma_outlier_stat = NA_real_,
+        dharma_outlier_p = NA_real_,
+        problem_type = "fit_error"
+      )
+
+    return(list(
+      summary_tbl = summary_tbl,
+      simres = NULL,
+      plot_data = NULL
+    ))
+  }
+
+  dharma_res <- analyse_dharma_trt(
+    fit_obj = fit_obj,
+    df = df_aoi,
+    nsim = nsim
+  )
+
+  summary_tbl <- tibble(
+    dataset = dataset_name,
+    AOI = as.character(aoi_value),
+    family = family_name,
+    n_obs = nrow(df_aoi),
+    n_topics = dplyr::n_distinct(df_aoi$Topic),
+    n_participants = dplyr::n_distinct(df_aoi$Participant),
+    n_conditions = dplyr::n_distinct(df_aoi$condition),
+    formula = paste(deparse(formula_i), collapse = " ")
+  ) %>%
+    bind_cols(fit_info) %>%
+    bind_cols(dharma_res$residual_summary) %>%
+    mutate(
+      problem_type = classify_problem_trt_residual(
+        fit_ok = fit_ok,
+        fit_nonposdef_hessian = fit_nonposdef_hessian,
+        fit_nonzero_convergence = fit_nonzero_convergence,
+        dharma_uniformity_p = dharma_uniformity_p,
+        dharma_dispersion_p = dharma_dispersion_p,
+        dharma_outlier_p = dharma_outlier_p,
+        fit_warning_text = fit_warning_text
+      )
+    )
+
+  list(
+    summary_tbl = summary_tbl,
+    simres = dharma_res$simres,
+    plot_data = dharma_res$plot_data
+  )
+}
+
+# =========================================================
+# AUTOMATISCHE PLOTAUSGABE
+# =========================================================
+
+print_all_trt_residual_plots <- function(res_obj) {
+  keys <- names(res_obj$plot_data_list)
+
+  for (i in seq_along(keys)) {
+    key <- keys[i]
+    plot_data <- res_obj$plot_data_list[[key]]
+    simres <- res_obj$simres_list[[key]]
+
+    if (is.null(plot_data) || is.null(simres)) next
+
+    parts <- strsplit(key, "__", fixed = TRUE)[[1]]
+    dataset_name <- parts[1]
+    aoi_value <- parts[2]
+    family_name <- parts[3]
+
+    print(plot_trt_residuals_vs_fitted(plot_data, dataset_name, aoi_value, family_name, 1))
+    print(plot_trt_residuals_vs_nLetters(plot_data, dataset_name, aoi_value, family_name, 2))
+    print(plot_trt_observed_vs_fitted(plot_data, dataset_name, aoi_value, family_name, 3))
+
+    graphics::plot(simres)
+    graphics::mtext(
+      text = paste0("[4/4] Standard DHARMa Plot | ", dataset_name, " | AOI ", aoi_value, " | ", family_name),
+      side = 3,
+      line = 1,
+      cex = 1.1,
+      font = 2
+    )
+  }
+}
+
+# =========================================================
+# HAUPTFUNKTION
+# =========================================================
+
+run_trt_residual_analysis <- function(dfs,
+                                      nsim = 2000,
+                                      print_plots = TRUE) {
+  res_list <- list()
+
+  for (dataset_name in names(dfs)) {
+    dat <- prep_trt_residual_data(dfs[[dataset_name]], dataset_name)
+    aois <- levels(droplevels(dat$AOI))
+
+    for (aoi_value in aois) {
+      df_aoi <- dat %>% dplyr::filter(AOI == aoi_value)
+
+      for (family_name in families_to_compare) {
+        key <- paste(dataset_name, aoi_value, family_name, sep = "__")
+
+        res_list[[key]] <- fit_one_full_case_trt_residual(
+          df_aoi = df_aoi,
+          dataset_name = dataset_name,
+          aoi_value = aoi_value,
+          family_name = family_name,
+          nsim = nsim
+        )
+      }
+    }
+  }
+
+  residual_summary <- purrr::map_dfr(res_list, "summary_tbl")
+
+  problem_counts <- residual_summary %>%
+    dplyr::count(family, problem_type, sort = TRUE)
+
+  plot_data_list <- purrr::map(res_list, "plot_data")
+  simres_list <- purrr::map(res_list, "simres")
+
+  out <- list(
+    residual_summary = residual_summary,
+    problem_counts = problem_counts,
+    plot_data_list = plot_data_list,
+    simres_list = simres_list,
+    raw_results = res_list
+  )
+
+  if (isTRUE(print_plots)) {
+    print_all_trt_residual_plots(out)
+  }
+
+  out
+}
+
+# =========================================================
+# AUSFÜHREN
+# =========================================================
+
+res_trt_residuals <- run_trt_residual_analysis(
+  dfs = dfs,
+  nsim = 2000,
+  print_plots = FALSE
+)
+
+# =========================================================
+# TABELLEN
+# =========================================================
+
+trt_residual_table_compact <- res_trt_residuals$residual_summary %>%
+  dplyr::select(
+    dataset,
+    AOI,
+    family,
+    aic,
+    dharma_uniformity_p,
+    dharma_dispersion_p,
+    dharma_outlier_p,
+    problem_type
+  ) %>%
+  dplyr::arrange(dataset, AOI, family) %>%
+  round_df_4()
+
+trt_best_family_residual_table <- res_trt_residuals$residual_summary %>%
+  dplyr::mutate(
+    has_problem = problem_type != "none"
+  ) %>%
+  dplyr::group_by(dataset, AOI) %>%
+  dplyr::arrange(
+    has_problem,
+    aic,
+    .by_group = TRUE
+  ) %>%
+  dplyr::slice(1) %>%
+  dplyr::ungroup() %>%
+  dplyr::transmute(
+    dataset,
+    AOI,
+    family,
+    aic = round(aic, 4),
+    uniformity = dplyr::case_when(
+      is.na(dharma_uniformity_p) ~ NA_character_,
+      dharma_uniformity_p < 0.05 ~ "problem",
+      TRUE ~ "ok"
+    ),
+    dispersion = dplyr::case_when(
+      is.na(dharma_dispersion_p) ~ NA_character_,
+      dharma_dispersion_p < 0.05 ~ "problem",
+      TRUE ~ "ok"
+    ),
+    outlier = dplyr::case_when(
+      is.na(dharma_outlier_p) ~ NA_character_,
+      dharma_outlier_p < 0.05 ~ "problem",
+      TRUE ~ "ok"
+    ),
+    problem_type
+  )
+
+round_df_4(res_trt_residuals$residual_summary)
+round_df_4(res_trt_residuals$problem_counts)
+trt_residual_table_compact
+trt_best_family_residual_table
+```
+
+Für TRT ist das Bild viel klarer und deutlich besser als bei FRT.
+Sowohl Gamma als auch Negative Binomial zeigen in allen 22 geprüften Fällen problem_type = "none". Das heißt, in diesen AOIs gab es in den verwendeten DHARMa-Checks keine auffälligen Signale für Uniformity-, Dispersion- oder Outlier-Probleme. Das spricht dafür, dass beide Modellklassen die Verteilung der FRT-Daten insgesamt gut abbilden.
+Das Normalmodell schneidet dagegen merklich schlechter ab. Nur 8 von 22 Fällen sind unauffällig, in 13 Fällen tritt ein Uniformity-Signal auf und in einem weiteren Fall ein Outlier-Signal. Damit zeigt das Normalmodell deutlich häufiger Residualprobleme als die beiden anderen Familien.
+Insgesamt spricht das Ergebnis klar dafür, für FRT eher eine Gamma- oder Negative-Binomial-Familie zu verwenden, während das Normalmodell deutlich weniger gut passt. Aus den DHARMa-Checks allein sind Gamma und Negative Binomial hier praktisch gleich gut.
+
+
+
+Da bisher noch keine Entscheidung zwischen Gamma und NegBin2 gefallen ist, schauen wir uns die jeweiligen RRT modelle an:
+RRT: mod_rrt <- glmmTMB( RRT ~  condition + nLetters + (1 | Topic) + (1 | Participant), ziformula = ~ condition + nLetters, data = dat, family = ziGamma(link = "log") )
+RRT: mod_rrt <- glmmTMB( RRT ~ condition + nLetters + (1 | Topic) + (1 | Participant), ziformula = ~ condition + nLetters, data = dat, family = truncated_nbinom2(link = "log") )
+
+
+
+Ein Visualler Check der Desnities der RRT mit und ohne 0 verdeutlichen unserern Bedarf für ein Modell, welches 0er explizit behandelt. 
+density ohne 0er:
+```{r}
+library(dplyr)
+library(ggplot2)
+library(purrr)
+
+# =========================================================
+# INPUT
+# =========================================================
+dfs <- list(
+  c_bed = c_bed,
+  c_ein = c_ein,
+  n_bed = n_bed,
+  n_ein = n_ein,
+  CS    = CS,
+  INC = INC
+)
+
+# =========================================================
+# FUNCTION: density plot per AOI
+# =========================================================
+plot_rrt_density_by_aoi <- function(df, dataset_name) {
+  
+  df_plot <- df %>%
+    dplyr::filter(!is.na(RRT), RRT > 0, !is.na(AOI))
+  
+  ggplot(df_plot, aes(x = RRT)) +
+    geom_density(adjust = 1) +
+    facet_wrap(~ AOI, scales = "free_y") +
+    labs(
+      title = paste("Density plots of RRT > 0 by AOI:", dataset_name),
+      x = "RRT",
+      y = "Density"
+    ) +
+    theme_minimal(base_size = 12)
+}
+
+# =========================================================
+# CREATE PLOTS
+# =========================================================
+density_plots <- purrr::imap(dfs, plot_rrt_density_by_aoi)
+
+# =========================================================
+# SHOW PLOTS
+# =========================================================
+density_plots$c_bed
+density_plots$c_ein
+density_plots$n_bed
+density_plots$n_ein
+density_plots$CS
+density_plots$INC
+```
+density mit 0ern
+```{r}
+library(dplyr)
+library(ggplot2)
+library(purrr)
+
+# =========================================================
+# INPUT
+# =========================================================
+dfs <- list(
+  c_bed = c_bed,
+  c_ein = c_ein,
+  n_bed = n_bed,
+  n_ein = n_ein,
+  CS    = CS,
+  INC = INC
+)
+
+# =========================================================
+# FUNCTION: density plot per AOI
+# =========================================================
+plot_rrt_density_by_aoi <- function(df, dataset_name) {
+  
+  df_plot <- df %>%
+    dplyr::filter(!is.na(RRT), !is.na(AOI))
+  
+  ggplot(df_plot, aes(x = RRT)) +
+    geom_density(adjust = 1) +
+    facet_wrap(~ AOI, scales = "free_y") +
+    labs(
+      title = paste("Density plots of RRT by AOI:", dataset_name),
+      x = "RRT",
+      y = "Density"
+    ) +
+    theme_minimal(base_size = 12)
+}
+
+# =========================================================
+# CREATE PLOTS
+# =========================================================
+density_plots <- purrr::imap(dfs, plot_rrt_density_by_aoi)
+
+# =========================================================
+# SHOW PLOTS
+# =========================================================
+density_plots$c_bed
+density_plots$c_ein
+density_plots$n_bed
+density_plots$n_ein
+density_plots$CS
+density_plots$INC
+```
+
+
+
+RRT NegBin vs Gamma
+```{r}
+library(dplyr)
+library(tidyr)
+library(purrr)
+library(glmmTMB)
+library(tibble)
+
+# =========================================================
+# INPUT
+# =========================================================
+
+dfs <- list(
+  c_bed = c_bed,
+  c_ein = c_ein,
+  n_bed = n_bed,
+  n_ein = n_ein,
+  CS    = CS
+)
+
+family_names <- c(
+  "ziGamma",
+  "truncated_nbinom2"
+)
+
+# =========================================================
+# HELFER
+# =========================================================
+
+safe_plain_df <- function(df) {
+  out <- as.data.frame(df, stringsAsFactors = FALSE)
+  rownames(out) <- NULL
+  out
+}
+
+round_df_4 <- function(df) {
+  df %>%
+    dplyr::mutate(dplyr::across(where(is.numeric), ~ round(.x, 4)))
+}
+
+collapse_unique <- function(x) {
+  x <- unique(stats::na.omit(x))
+  if (length(x) == 0) return(NA_character_)
+  paste(x, collapse = " | ")
+}
+
+progress_note <- function(..., verbose = TRUE) {
+  if (!isTRUE(verbose)) return(invisible(NULL))
+  msg <- paste0(...)
+  message(msg)
+  flush.console()
+}
+
+# =========================================================
+# DATEN
+# =========================================================
+
+prep_rrt_screen_data <- function(df) {
+  needed <- c("RRT", "nLetters", "Participant", "Topic", "condition", "AOI")
+
+  missing_cols <- setdiff(needed, names(df))
+  if (length(missing_cols) > 0) {
+    stop("Fehlende Variablen: ", paste(missing_cols, collapse = ", "))
+  }
+
+  out <- df %>%
+    dplyr::filter(!is.na(RRT), RRT >= 0) %>%
+    dplyr::filter(!is.na(nLetters)) %>%
+    dplyr::filter(!is.na(Participant), !is.na(Topic), !is.na(condition), !is.na(AOI)) %>%
+    dplyr::mutate(
+      Participant = factor(Participant),
+      Topic = factor(Topic),
+      condition = factor(condition),
+      AOI = factor(AOI)
+    )
+
+  safe_plain_df(out)
+}
+
+# =========================================================
+# FORMELN PRO AOI
+# =========================================================
+
+make_formula_rrt <- function(response = "RRT") {
+  as.formula(
+    paste(
+      response,
+      "~ condition + nLetters + (1 | Topic) + (1 | Participant)"
+    )
+  )
+}
+
+make_ziformula_rrt <- function() {
+  ~ condition + nLetters
+}
+
+# =========================================================
+# DESIGNMATRIX-CHECK PRO AOI
+# =========================================================
+
+inspect_design_matrix_identifiability_rrt <- function(df, formula) {
+  fixed_formula <- lme4::nobars(formula)
+  mf_fixed <- model.frame(fixed_formula, data = droplevels(df), na.action = na.omit)
+  X <- model.matrix(fixed_formula, data = mf_fixed)
+
+  qrX <- qr(X)
+  rankX <- qrX$rank
+  pX <- ncol(X)
+  rankdef <- rankX < pX
+
+  redundant_cols <- if (rankdef) {
+    pivot <- qrX$pivot
+    redundant_idx <- pivot[seq.int(rankX + 1, pX)]
+    colnames(X)[redundant_idx]
+  } else {
+    character(0)
+  }
+
+  n_distinct_nLetters <- dplyr::n_distinct(df$nLetters)
+  min_nLetters <- min(df$nLetters)
+  max_nLetters <- max(df$nLetters)
+
+  cell_df <- df %>%
+    dplyr::group_by(condition, .drop = FALSE) %>%
+    dplyr::summarise(
+      n_obs = dplyr::n(),
+      n_distinct_nLetters = dplyr::n_distinct(nLetters),
+      .groups = "drop"
+    )
+
+  n_cells_total <- nrow(cell_df)
+  n_cells_nLetters_constant <- sum(cell_df$n_distinct_nLetters <= 1)
+
+  redundant_cols_text <- collapse_unique(redundant_cols)
+
+  redundant_involve_nLetters <- if (length(redundant_cols) == 0) {
+    FALSE
+  } else {
+    any(grepl("nLetters", redundant_cols, fixed = TRUE))
+  }
+
+  rankdef_consistent_with_nLetters_issue <- rankdef &&
+    (
+      n_distinct_nLetters <= 1 ||
+      redundant_involve_nLetters ||
+      n_cells_nLetters_constant > 0
+    )
+
+  rankdef_consistency_reason <- dplyr::case_when(
+    !rankdef ~ NA_character_,
+    n_distinct_nLetters <= 1 ~ "nLetters_has_no_global_variation",
+    redundant_involve_nLetters & n_cells_nLetters_constant > 0 ~
+      "redundant_cols_involve_nLetters_and_nLetters_is_constant_in_some_cells",
+    redundant_involve_nLetters ~
+      "redundant_cols_involve_nLetters",
+    n_cells_nLetters_constant > 0 ~
+      "nLetters_is_constant_in_some_cells_but_redundancy_is_not_uniquely_attributable",
+    TRUE ~
+      "not_clearly_consistent_with_nLetters_issue"
+  )
+
+  tibble(
+    X_rank = rankX,
+    X_ncol = pX,
+    fit_rank_deficient = rankdef,
+    redundant_cols = redundant_cols_text,
+    n_distinct_nLetters = n_distinct_nLetters,
+    min_nLetters = min_nLetters,
+    max_nLetters = max_nLetters,
+    n_design_cells = n_cells_total,
+    n_cells_nLetters_constant = n_cells_nLetters_constant,
+    rankdef_consistent_with_nLetters_issue = rankdef_consistent_with_nLetters_issue,
+    rankdef_consistency_reason = rankdef_consistency_reason
+  )
+}
+
+# =========================================================
+# GLMMTMB FIT
+# =========================================================
+
+get_rrt_family <- function(family_name) {
+  switch(
+    family_name,
+    ziGamma = ziGamma(link = "log"),
+    truncated_nbinom2 = truncated_nbinom2(link = "log"),
+    stop("Unbekannte Familie: ", family_name)
+  )
+}
+
+fit_rrt_capture <- function(df,
+                            formula,
+                            ziformula,
+                            family_name) {
+  warn_texts <- character()
+  msg_texts  <- character()
+
+  fam <- get_rrt_family(family_name)
+
+  fit <- withCallingHandlers(
+    tryCatch(
+      glmmTMB::glmmTMB(
+        formula = formula,
+        ziformula = ziformula,
+        data = droplevels(df),
+        family = fam
+      ),
+      error = function(e) e
+    ),
+    warning = function(w) {
+      warn_texts <<- c(warn_texts, conditionMessage(w))
+      invokeRestart("muffleWarning")
+    },
+    message = function(m) {
+      msg_texts <<- c(msg_texts, conditionMessage(m))
+      invokeRestart("muffleMessage")
+    }
+  )
+
+  if (inherits(fit, "error")) {
+    return(list(
+      fit = NULL,
+      fit_info = tibble(
+        fit_ok = FALSE,
+        fit_error = conditionMessage(fit),
+        fit_warning_text = collapse_unique(warn_texts),
+        fit_message_text = collapse_unique(msg_texts),
+        n_warning_messages = length(unique(stats::na.omit(warn_texts))),
+        n_messages = length(unique(stats::na.omit(msg_texts))),
+        fit_nonposdef_hessian = NA,
+        fit_nonzero_convergence = NA,
+        aic = NA_real_,
+        bic = NA_real_,
+        logLik = NA_real_
+      )
+    ))
+  }
+
+  fit_nonposdef_hessian <- tryCatch(
+    !isTRUE(fit$sdr$pdHess),
+    error = function(e) NA
+  )
+
+  fit_nonzero_convergence <- tryCatch(
+    {
+      conv <- fit$fit$convergence
+      if (is.null(conv)) NA else conv != 0
+    },
+    error = function(e) NA
+  )
+
+  list(
+    fit = fit,
+    fit_info = tibble(
+      fit_ok = TRUE,
+      fit_error = NA_character_,
+      fit_warning_text = collapse_unique(warn_texts),
+      fit_message_text = collapse_unique(msg_texts),
+      n_warning_messages = length(unique(stats::na.omit(warn_texts))),
+      n_messages = length(unique(stats::na.omit(msg_texts))),
+      fit_nonposdef_hessian = fit_nonposdef_hessian,
+      fit_nonzero_convergence = fit_nonzero_convergence,
+      aic = tryCatch(as.numeric(AIC(fit)), error = function(e) NA_real_),
+      bic = tryCatch(as.numeric(BIC(fit)), error = function(e) NA_real_),
+      logLik = tryCatch(as.numeric(logLik(fit)), error = function(e) NA_real_)
+    )
+  )
+}
+
+# =========================================================
+# 0ER-CHECK
+# =========================================================
+
+extract_zero_check_rrt <- function(fit, df, family_name) {
+  prop_zero_observed <- mean(df$RRT == 0, na.rm = TRUE)
+
+  prop_zero_predicted <- tryCatch(
+    {
+      if (family_name == "ziGamma") {
+        mean(predict(fit, type = "zprob"), na.rm = TRUE)
+      } else {
+        0
+      }
+    },
+    error = function(e) NA_real_
+  )
+
+  tibble(
+    prop_zero_observed = prop_zero_observed,
+    prop_zero_predicted = prop_zero_predicted,
+    abs_zero_diff = abs(prop_zero_observed - prop_zero_predicted)
+  )
+}
+
+# =========================================================
+# EINE FIT-SITUATION
+# =========================================================
+
+fit_one_rrt_screen_case <- function(df,
+                                    formula,
+                                    ziformula,
+                                    family_name) {
+  design_info <- inspect_design_matrix_identifiability_rrt(
+    df = df,
+    formula = formula
+  )
+
+  fit_res <- fit_rrt_capture(
+    df = df,
+    formula = formula,
+    ziformula = ziformula,
+    family_name = family_name
+  )
+
+  zero_info <- if (!is.null(fit_res$fit)) {
+    extract_zero_check_rrt(
+      fit = fit_res$fit,
+      df = df,
+      family_name = family_name
+    )
+  } else {
+    tibble(
+      prop_zero_observed = mean(df$RRT == 0, na.rm = TRUE),
+      prop_zero_predicted = NA_real_,
+      abs_zero_diff = NA_real_
+    )
+  }
+
+  bind_cols(design_info, fit_res$fit_info, zero_info)
+}
+
+# =========================================================
+# VOLLE DATEN: EIN EXPERIMENT, GETRENNT PRO AOI
+# =========================================================
+
+run_rrt_screen_full_one_experiment <- function(df,
+                                               exp_name,
+                                               response = "RRT",
+                                               verbose = TRUE) {
+  dat <- prep_rrt_screen_data(df)
+
+  aois <- levels(droplevels(dat$AOI))
+
+  purrr::map_dfr(family_names, function(fam_i) {
+    purrr::map_dfr(aois, function(aoi_i) {
+      dat_aoi <- dat %>%
+        dplyr::filter(AOI == aoi_i)
+
+      formula_i <- make_formula_rrt(response = response)
+      ziformula_i <- make_ziformula_rrt()
+
+      progress_note(
+        "[FULL AOI] exp=", exp_name,
+        " family=", fam_i,
+        " AOI=", aoi_i,
+        " n=", nrow(dat_aoi),
+        verbose = verbose
+      )
+
+      fit_out <- fit_one_rrt_screen_case(
+        df = dat_aoi,
+        formula = formula_i,
+        ziformula = ziformula_i,
+        family_name = fam_i
+      )
+
+      tibble(
+        experiment = exp_name,
+        family_name = fam_i,
+        AOI = as.character(aoi_i),
+        n_obs = nrow(dat_aoi),
+        n_topics = dplyr::n_distinct(dat_aoi$Topic),
+        n_participants = dplyr::n_distinct(dat_aoi$Participant),
+        formula = paste(deparse(formula_i), collapse = " "),
+        ziformula = "~ condition + nLetters"
+      ) %>%
+        dplyr::bind_cols(fit_out)
+    })
+  })
+}
+
+# =========================================================
+# ÜBER ALLE EXPERIMENTE
+# =========================================================
+
+run_rrt_screen_full_all <- function(dfs,
+                                    response = "RRT",
+                                    verbose = TRUE) {
+  full_all <- purrr::imap_dfr(dfs, function(df, exp_name) {
+    run_rrt_screen_full_one_experiment(
+      df = df,
+      exp_name = exp_name,
+      response = response,
+      verbose = verbose
+    )
+  })
+
+  full_summary <- full_all %>%
+    dplyr::mutate(has_warning = n_warning_messages > 0) %>%
+    dplyr::group_by(experiment, family_name) %>%
+    dplyr::summarise(
+      n_aois = dplyr::n(),
+      n_fit_failed = sum(fit_ok %in% FALSE, na.rm = TRUE),
+      n_nonposdef_hessian = sum(fit_nonposdef_hessian %in% TRUE, na.rm = TRUE),
+      n_nonzero_convergence = sum(fit_nonzero_convergence %in% TRUE, na.rm = TRUE),
+      n_rank_deficient = sum(fit_rank_deficient %in% TRUE, na.rm = TRUE),
+      n_rankdef_consistent_with_nLetters_issue = sum(rankdef_consistent_with_nLetters_issue %in% TRUE, na.rm = TRUE),
+      n_rankdef_not_clearly_consistent_with_nLetters_issue = sum(
+        fit_rank_deficient %in% TRUE & !(rankdef_consistent_with_nLetters_issue %in% TRUE),
+        na.rm = TRUE
+      ),
+      n_fits_with_warning = sum(has_warning, na.rm = TRUE),
+      total_warning_messages = sum(n_warning_messages, na.rm = TRUE),
+      mean_abs_zero_diff = mean(abs_zero_diff, na.rm = TRUE),
+      median_abs_zero_diff = median(abs_zero_diff, na.rm = TRUE),
+      mean_aic = mean(aic, na.rm = TRUE),
+      median_aic = median(aic, na.rm = TRUE),
+      .groups = "drop"
+    )
+
+  full_overall <- full_all %>%
+    dplyr::mutate(has_warning = n_warning_messages > 0) %>%
+    dplyr::group_by(family_name) %>%
+    dplyr::summarise(
+      n_aois = dplyr::n(),
+      n_fit_failed = sum(fit_ok %in% FALSE, na.rm = TRUE),
+      n_nonposdef_hessian = sum(fit_nonposdef_hessian %in% TRUE, na.rm = TRUE),
+      n_nonzero_convergence = sum(fit_nonzero_convergence %in% TRUE, na.rm = TRUE),
+      n_rank_deficient = sum(fit_rank_deficient %in% TRUE, na.rm = TRUE),
+      n_rankdef_consistent_with_nLetters_issue = sum(rankdef_consistent_with_nLetters_issue %in% TRUE, na.rm = TRUE),
+      n_rankdef_not_clearly_consistent_with_nLetters_issue = sum(
+        fit_rank_deficient %in% TRUE & !(rankdef_consistent_with_nLetters_issue %in% TRUE),
+        na.rm = TRUE
+      ),
+      n_fits_with_warning = sum(has_warning, na.rm = TRUE),
+      total_warning_messages = sum(n_warning_messages, na.rm = TRUE),
+      mean_abs_zero_diff = mean(abs_zero_diff, na.rm = TRUE),
+      median_abs_zero_diff = median(abs_zero_diff, na.rm = TRUE),
+      mean_aic = mean(aic, na.rm = TRUE),
+      median_aic = median(aic, na.rm = TRUE),
+      .groups = "drop"
+    )
+
+  list(
+    full_all = full_all,
+    full_summary = full_summary,
+    full_overall = full_overall
+  )
+}
+
+# =========================================================
+# AUSFÜHREN
+# =========================================================
+
+res_rrt_screen_full <- run_rrt_screen_full_all(
+  dfs = dfs,
+  response = "RRT",
+  verbose = TRUE
+)
+
+# =========================================================
+# OUTPUTS
+# =========================================================
+
+round_df_4(res_rrt_screen_full$full_all)
+round_df_4(res_rrt_screen_full$full_summary)
+round_df_4(res_rrt_screen_full$full_overall)
+```
+Hier ist ziGamma stabiler. Weniger nonposdef_hessian
+
+
+Topic LOO - RRT
+```{r}
+library(dplyr)
+library(tidyr)
+library(purrr)
+library(glmmTMB)
+library(lme4)
+library(tibble)
+
+# =========================================================
+# INPUT
+# =========================================================
+
+dfs <- list(
+  c_bed = c_bed,
+  c_ein = c_ein,
+  n_bed = n_bed,
+  n_ein = n_ein,
+  CS    = CS
+)
+
+family_names <- c(
+  "ziGamma",
+  "truncated_nbinom2"
+)
+
+# =========================================================
+# HELFER
+# =========================================================
+
+safe_plain_df <- function(df) {
+  out <- as.data.frame(df, stringsAsFactors = FALSE)
+  rownames(out) <- NULL
+  out
+}
+
+round_df_4 <- function(df) {
+  df %>%
+    dplyr::mutate(dplyr::across(where(is.numeric), ~ round(.x, 4)))
+}
+
+collapse_unique <- function(x) {
+  x <- unique(stats::na.omit(x))
+  if (length(x) == 0) return(NA_character_)
+  paste(x, collapse = " | ")
+}
+
+progress_note <- function(..., verbose = TRUE) {
+  if (!isTRUE(verbose)) return(invisible(NULL))
+  msg <- paste0(...)
+  message(msg)
+  flush.console()
+}
+
+# =========================================================
+# DATEN
+# =========================================================
+
+prep_rrt_screen_data <- function(df) {
+  needed <- c("RRT", "nLetters", "Participant", "Topic", "condition", "AOI")
+
+  missing_cols <- setdiff(needed, names(df))
+  if (length(missing_cols) > 0) {
+    stop("Fehlende Variablen: ", paste(missing_cols, collapse = ", "))
+  }
+
+  out <- df %>%
+    dplyr::filter(!is.na(RRT), RRT >= 0) %>%
+    dplyr::filter(!is.na(nLetters)) %>%
+    dplyr::filter(!is.na(Participant), !is.na(Topic), !is.na(condition), !is.na(AOI)) %>%
+    dplyr::mutate(
+      Participant = factor(Participant),
+      Topic = factor(Topic),
+      condition = factor(condition),
+      AOI = factor(AOI)
+    )
+
+  safe_plain_df(out)
+}
+
+# =========================================================
+# FORMELN
+# =========================================================
+
+make_formula_rrt <- function(response = "RRT") {
+  as.formula(
+    paste(
+      response,
+      "~ condition + nLetters + (1 | Topic) + (1 | Participant)"
+    )
+  )
+}
+
+make_ziformula_rrt <- function() {
+  ~ condition + nLetters
+}
+
+# =========================================================
+# DESIGNMATRIX-CHECK PRO TRAININGSFOLD
+# =========================================================
+
+inspect_design_matrix_identifiability_rrt <- function(df, formula) {
+  fixed_formula <- lme4::nobars(formula)
+  mf_fixed <- model.frame(fixed_formula, data = droplevels(df), na.action = na.omit)
+  X <- model.matrix(fixed_formula, data = mf_fixed)
+
+  qrX <- qr(X)
+  rankX <- qrX$rank
+  pX <- ncol(X)
+  rankdef <- rankX < pX
+
+  redundant_cols <- if (rankdef) {
+    pivot <- qrX$pivot
+    redundant_idx <- pivot[seq.int(rankX + 1, pX)]
+    colnames(X)[redundant_idx]
+  } else {
+    character(0)
+  }
+
+  n_distinct_nLetters <- dplyr::n_distinct(df$nLetters)
+  min_nLetters <- min(df$nLetters)
+  max_nLetters <- max(df$nLetters)
+
+  cell_df <- df %>%
+    dplyr::group_by(condition, .drop = FALSE) %>%
+    dplyr::summarise(
+      n_obs = dplyr::n(),
+      n_distinct_nLetters = dplyr::n_distinct(nLetters),
+      .groups = "drop"
+    )
+
+  n_cells_total <- nrow(cell_df)
+  n_cells_nLetters_constant <- sum(cell_df$n_distinct_nLetters <= 1)
+
+  redundant_cols_text <- collapse_unique(redundant_cols)
+
+  redundant_involve_nLetters <- if (length(redundant_cols) == 0) {
+    FALSE
+  } else {
+    any(grepl("nLetters", redundant_cols, fixed = TRUE))
+  }
+
+  rankdef_consistent_with_nLetters_issue <- rankdef &&
+    (
+      n_distinct_nLetters <= 1 ||
+      redundant_involve_nLetters ||
+      n_cells_nLetters_constant > 0
+    )
+
+  rankdef_consistency_reason <- dplyr::case_when(
+    !rankdef ~ NA_character_,
+    n_distinct_nLetters <= 1 ~ "nLetters_has_no_global_variation",
+    redundant_involve_nLetters & n_cells_nLetters_constant > 0 ~
+      "redundant_cols_involve_nLetters_and_nLetters_is_constant_in_some_cells",
+    redundant_involve_nLetters ~
+      "redundant_cols_involve_nLetters",
+    n_cells_nLetters_constant > 0 ~
+      "nLetters_is_constant_in_some_cells_but_redundancy_is_not_uniquely_attributable",
+    TRUE ~
+      "not_clearly_consistent_with_nLetters_issue"
+  )
+
+  tibble(
+    X_rank = rankX,
+    X_ncol = pX,
+    fit_rank_deficient = rankdef,
+    redundant_cols = redundant_cols_text,
+    n_distinct_nLetters = n_distinct_nLetters,
+    min_nLetters = min_nLetters,
+    max_nLetters = max_nLetters,
+    n_design_cells = n_cells_total,
+    n_cells_nLetters_constant = n_cells_nLetters_constant,
+    rankdef_consistent_with_nLetters_issue = rankdef_consistent_with_nLetters_issue,
+    rankdef_consistency_reason = rankdef_consistency_reason
+  )
+}
+
+# =========================================================
+# GLMMTMB FIT
+# =========================================================
+
+get_rrt_family <- function(family_name) {
+  switch(
+    family_name,
+    ziGamma = ziGamma(link = "log"),
+    truncated_nbinom2 = truncated_nbinom2(link = "log"),
+    stop("Unbekannte Familie: ", family_name)
+  )
+}
+
+fit_rrt_capture <- function(df,
+                            formula,
+                            ziformula,
+                            family_name) {
+  warn_texts <- character()
+  msg_texts  <- character()
+
+  fam <- get_rrt_family(family_name)
+
+  fit <- withCallingHandlers(
+    tryCatch(
+      glmmTMB::glmmTMB(
+        formula = formula,
+        ziformula = ziformula,
+        data = droplevels(df),
+        family = fam
+      ),
+      error = function(e) e
+    ),
+    warning = function(w) {
+      warn_texts <<- c(warn_texts, conditionMessage(w))
+      invokeRestart("muffleWarning")
+    },
+    message = function(m) {
+      msg_texts <<- c(msg_texts, conditionMessage(m))
+      invokeRestart("muffleMessage")
+    }
+  )
+
+  if (inherits(fit, "error")) {
+    return(list(
+      fit = NULL,
+      fit_info = tibble(
+        fit_ok = FALSE,
+        fit_error = conditionMessage(fit),
+        fit_warning_text = collapse_unique(warn_texts),
+        fit_message_text = collapse_unique(msg_texts),
+        n_warning_messages = length(unique(stats::na.omit(warn_texts))),
+        n_messages = length(unique(stats::na.omit(msg_texts))),
+        fit_nonposdef_hessian = NA,
+        fit_nonzero_convergence = NA,
+        aic = NA_real_,
+        bic = NA_real_,
+        logLik = NA_real_
+      )
+    ))
+  }
+
+  fit_nonposdef_hessian <- tryCatch(
+    !isTRUE(fit$sdr$pdHess),
+    error = function(e) NA
+  )
+
+  fit_nonzero_convergence <- tryCatch(
+    {
+      conv <- fit$fit$convergence
+      if (is.null(conv)) NA else conv != 0
+    },
+    error = function(e) NA
+  )
+
+  list(
+    fit = fit,
+    fit_info = tibble(
+      fit_ok = TRUE,
+      fit_error = NA_character_,
+      fit_warning_text = collapse_unique(warn_texts),
+      fit_message_text = collapse_unique(msg_texts),
+      n_warning_messages = length(unique(stats::na.omit(warn_texts))),
+      n_messages = length(unique(stats::na.omit(msg_texts))),
+      fit_nonposdef_hessian = fit_nonposdef_hessian,
+      fit_nonzero_convergence = fit_nonzero_convergence,
+      aic = tryCatch(as.numeric(AIC(fit)), error = function(e) NA_real_),
+      bic = tryCatch(as.numeric(BIC(fit)), error = function(e) NA_real_),
+      logLik = tryCatch(as.numeric(logLik(fit)), error = function(e) NA_real_)
+    )
+  )
+}
+
+# =========================================================
+# 0ER-CHECK AUF HOLDOUT
+# =========================================================
+
+extract_zero_check_rrt_holdout <- function(fit, newdata, family_name) {
+  prop_zero_observed <- mean(newdata$RRT == 0, na.rm = TRUE)
+
+  prop_zero_predicted <- tryCatch(
+    {
+      if (family_name == "ziGamma") {
+        mean(
+          predict(
+            fit,
+            newdata = droplevels(newdata),
+            type = "zprob",
+            allow.new.levels = TRUE
+          ),
+          na.rm = TRUE
+        )
+      } else {
+        0
+      }
+    },
+    error = function(e) NA_real_
+  )
+
+  tibble(
+    prop_zero_observed = prop_zero_observed,
+    prop_zero_predicted = prop_zero_predicted,
+    abs_zero_diff = abs(prop_zero_observed - prop_zero_predicted)
+  )
+}
+
+# =========================================================
+# EINE FIT-SITUATION
+# =========================================================
+
+fit_one_rrt_topicloo_case <- function(df_train,
+                                      df_test,
+                                      formula,
+                                      ziformula,
+                                      family_name) {
+  design_info <- inspect_design_matrix_identifiability_rrt(
+    df = df_train,
+    formula = formula
+  )
+
+  fit_res <- fit_rrt_capture(
+    df = df_train,
+    formula = formula,
+    ziformula = ziformula,
+    family_name = family_name
+  )
+
+  zero_info <- if (!is.null(fit_res$fit)) {
+    extract_zero_check_rrt_holdout(
+      fit = fit_res$fit,
+      newdata = df_test,
+      family_name = family_name
+    )
+  } else {
+    tibble(
+      prop_zero_observed = mean(df_test$RRT == 0, na.rm = TRUE),
+      prop_zero_predicted = NA_real_,
+      abs_zero_diff = NA_real_
+    )
+  }
+
+  bind_cols(design_info, fit_res$fit_info, zero_info)
+}
+
+# =========================================================
+# TOPIC-LOO: EIN EXPERIMENT, GETRENNT PRO AOI
+# =========================================================
+
+run_rrt_screen_topicloo_one_experiment <- function(df,
+                                                   exp_name,
+                                                   response = "RRT",
+                                                   verbose = TRUE) {
+  dat <- prep_rrt_screen_data(df)
+
+  aois <- levels(droplevels(dat$AOI))
+
+  purrr::map_dfr(family_names, function(fam_i) {
+    purrr::map_dfr(aois, function(aoi_i) {
+      dat_aoi <- dat %>%
+        dplyr::filter(AOI == aoi_i)
+
+      topics <- levels(droplevels(dat_aoi$Topic))
+
+      purrr::map_dfr(topics, function(topic_holdout) {
+        dat_train <- dat_aoi %>%
+          dplyr::filter(Topic != topic_holdout)
+
+        dat_test <- dat_aoi %>%
+          dplyr::filter(Topic == topic_holdout)
+
+        formula_i <- make_formula_rrt(response = response)
+        ziformula_i <- make_ziformula_rrt()
+
+        progress_note(
+          "[TOPIC-LOO AOI] exp=", exp_name,
+          " family=", fam_i,
+          " AOI=", aoi_i,
+          " holdout_topic=", topic_holdout,
+          " n_train=", nrow(dat_train),
+          " n_test=", nrow(dat_test),
+          verbose = verbose
+        )
+
+        if (nrow(dat_train) == 0 || nrow(dat_test) == 0) {
+          return(tibble(
+            experiment = exp_name,
+            family_name = fam_i,
+            AOI = as.character(aoi_i),
+            holdout_topic = as.character(topic_holdout),
+            n_train = nrow(dat_train),
+            n_test = nrow(dat_test),
+            n_topics_train = dplyr::n_distinct(dat_train$Topic),
+            n_participants_train = dplyr::n_distinct(dat_train$Participant),
+            formula = paste(deparse(formula_i), collapse = " "),
+            ziformula = "~ condition + nLetters",
+            X_rank = NA_real_,
+            X_ncol = NA_real_,
+            fit_rank_deficient = NA,
+            redundant_cols = NA_character_,
+            n_distinct_nLetters = NA_real_,
+            min_nLetters = NA_real_,
+            max_nLetters = NA_real_,
+            n_design_cells = NA_real_,
+            n_cells_nLetters_constant = NA_real_,
+            rankdef_consistent_with_nLetters_issue = NA,
+            rankdef_consistency_reason = NA_character_,
+            fit_ok = FALSE,
+            fit_error = "empty_train_or_test_fold",
+            fit_warning_text = NA_character_,
+            fit_message_text = NA_character_,
+            n_warning_messages = NA_real_,
+            n_messages = NA_real_,
+            fit_nonposdef_hessian = NA,
+            fit_nonzero_convergence = NA,
+            aic = NA_real_,
+            bic = NA_real_,
+            logLik = NA_real_,
+            prop_zero_observed = mean(dat_test$RRT == 0, na.rm = TRUE),
+            prop_zero_predicted = NA_real_,
+            abs_zero_diff = NA_real_
+          ))
+        }
+
+        fit_out <- fit_one_rrt_topicloo_case(
+          df_train = dat_train,
+          df_test = dat_test,
+          formula = formula_i,
+          ziformula = ziformula_i,
+          family_name = fam_i
+        )
+
+        tibble(
+          experiment = exp_name,
+          family_name = fam_i,
+          AOI = as.character(aoi_i),
+          holdout_topic = as.character(topic_holdout),
+          n_train = nrow(dat_train),
+          n_test = nrow(dat_test),
+          n_topics_train = dplyr::n_distinct(dat_train$Topic),
+          n_participants_train = dplyr::n_distinct(dat_train$Participant),
+          formula = paste(deparse(formula_i), collapse = " "),
+          ziformula = "~ condition + nLetters"
+        ) %>%
+          dplyr::bind_cols(fit_out)
+      })
+    })
+  })
+}
+
+# =========================================================
+# ÜBER ALLE EXPERIMENTE
+# =========================================================
+
+run_rrt_screen_topicloo_all <- function(dfs,
+                                        response = "RRT",
+                                        verbose = TRUE) {
+  loo_all <- purrr::imap_dfr(dfs, function(df, exp_name) {
+    run_rrt_screen_topicloo_one_experiment(
+      df = df,
+      exp_name = exp_name,
+      response = response,
+      verbose = verbose
+    )
+  })
+
+  loo_summary <- loo_all %>%
+    dplyr::mutate(has_warning = n_warning_messages > 0) %>%
+    dplyr::group_by(experiment, family_name) %>%
+    dplyr::summarise(
+      n_folds = dplyr::n(),
+      n_fit_failed = sum(fit_ok %in% FALSE, na.rm = TRUE),
+      n_nonposdef_hessian = sum(fit_nonposdef_hessian %in% TRUE, na.rm = TRUE),
+      n_nonzero_convergence = sum(fit_nonzero_convergence %in% TRUE, na.rm = TRUE),
+      n_rank_deficient = sum(fit_rank_deficient %in% TRUE, na.rm = TRUE),
+      n_rankdef_consistent_with_nLetters_issue = sum(rankdef_consistent_with_nLetters_issue %in% TRUE, na.rm = TRUE),
+      n_rankdef_not_clearly_consistent_with_nLetters_issue = sum(
+        fit_rank_deficient %in% TRUE & !(rankdef_consistent_with_nLetters_issue %in% TRUE),
+        na.rm = TRUE
+      ),
+      n_fits_with_warning = sum(has_warning, na.rm = TRUE),
+      total_warning_messages = sum(n_warning_messages, na.rm = TRUE),
+      mean_abs_zero_diff = mean(abs_zero_diff, na.rm = TRUE),
+      median_abs_zero_diff = median(abs_zero_diff, na.rm = TRUE),
+      mean_aic = mean(aic, na.rm = TRUE),
+      median_aic = median(aic, na.rm = TRUE),
+      .groups = "drop"
+    )
+
+  loo_overall <- loo_all %>%
+    dplyr::mutate(has_warning = n_warning_messages > 0) %>%
+    dplyr::group_by(family_name) %>%
+    dplyr::summarise(
+      n_folds = dplyr::n(),
+      n_fit_failed = sum(fit_ok %in% FALSE, na.rm = TRUE),
+      n_nonposdef_hessian = sum(fit_nonposdef_hessian %in% TRUE, na.rm = TRUE),
+      n_nonzero_convergence = sum(fit_nonzero_convergence %in% TRUE, na.rm = TRUE),
+      n_rank_deficient = sum(fit_rank_deficient %in% TRUE, na.rm = TRUE),
+      n_rankdef_consistent_with_nLetters_issue = sum(rankdef_consistent_with_nLetters_issue %in% TRUE, na.rm = TRUE),
+      n_rankdef_not_clearly_consistent_with_nLetters_issue = sum(
+        fit_rank_deficient %in% TRUE & !(rankdef_consistent_with_nLetters_issue %in% TRUE),
+        na.rm = TRUE
+      ),
+      n_fits_with_warning = sum(has_warning, na.rm = TRUE),
+      total_warning_messages = sum(n_warning_messages, na.rm = TRUE),
+      mean_abs_zero_diff = mean(abs_zero_diff, na.rm = TRUE),
+      median_abs_zero_diff = median(abs_zero_diff, na.rm = TRUE),
+      mean_aic = mean(aic, na.rm = TRUE),
+      median_aic = median(aic, na.rm = TRUE),
+      .groups = "drop"
+    )
+
+  list(
+    loo_all = loo_all,
+    loo_summary = loo_summary,
+    loo_overall = loo_overall
+  )
+}
+
+# =========================================================
+# AUSFÜHREN
+# =========================================================
+
+res_rrt_screen_topicloo <- run_rrt_screen_topicloo_all(
+  dfs = dfs,
+  response = "RRT",
+  verbose = TRUE
+)
+
+# =========================================================
+# OUTPUTS
+# =========================================================
+
+round_df_4(res_rrt_screen_topicloo$loo_all)
+round_df_4(res_rrt_screen_topicloo$loo_summary)
+round_df_4(res_rrt_screen_topicloo$loo_overall)
+```
+Hier beide recht instabil. 
+
+
+
+
+Wir schauen uns den Participant LOO auf RRT an:
+```{r}
+library(dplyr)
+library(tidyr)
+library(purrr)
+library(tibble)
+library(glmmTMB)
+library(lme4)
+
+# =========================================================
+# SETTINGS
+# =========================================================
+
+dfs <- list(
+  c_bed = c_bed,
+  c_ein = c_ein,
+  n_bed = n_bed,
+  n_ein = n_ein,
+  CS    = CS
+)
+
+datasets_with_speaker_interaction <- c("n_bed", "n_ein", "CS")
+
+families_to_compare <- c(
+  "ziGamma",
+  "truncated_nbinom2"
+)
+
+# =========================================================
+# HILFSFUNKTIONEN
+# =========================================================
+
+safe_plain_df <- function(df) {
+  out <- as.data.frame(df, stringsAsFactors = FALSE)
+  rownames(out) <- NULL
+  out
+}
+
+round_df_4 <- function(df) {
+  df %>%
+    dplyr::mutate(dplyr::across(where(is.numeric), ~ round(.x, 4)))
+}
+
+collapse_unique <- function(x) {
+  x <- unique(stats::na.omit(x))
+  if (length(x) == 0) return(NA_character_)
+  paste(x, collapse = " | ")
+}
+
+rmse_vec <- function(obs, pred) {
+  keep <- is.finite(obs) & is.finite(pred)
+  obs <- obs[keep]
+  pred <- pred[keep]
+  if (length(obs) == 0) return(NA_real_)
+  sqrt(mean((obs - pred)^2))
+}
+
+mae_vec <- function(obs, pred) {
+  keep <- is.finite(obs) & is.finite(pred)
+  obs <- obs[keep]
+  pred <- pred[keep]
+  if (length(obs) == 0) return(NA_real_)
+  mean(abs(obs - pred))
+}
+
+# =========================================================
+# DATEN
+# =========================================================
+
+prep_rrt_data <- function(df, dataset_name) {
+  needed <- c("RRT", "Participant", "Topic", "condition", "AOI", "nLetters")
+  if (dataset_name %in% datasets_with_speaker_interaction) {
+    needed <- c(needed, "speaker")
+  }
+
+  missing_cols <- setdiff(needed, names(df))
+  if (length(missing_cols) > 0) {
+    stop("Fehlende Variablen: ", paste(missing_cols, collapse = ", "))
+  }
+
+  out <- df %>%
+    dplyr::filter(!is.na(RRT), RRT >= 0) %>%
+    dplyr::filter(!is.na(Participant), !is.na(Topic), !is.na(condition), !is.na(AOI), !is.na(nLetters)) %>%
+    dplyr::mutate(
+      Participant = factor(Participant),
+      Topic = factor(Topic),
+      condition = factor(condition),
+      AOI = factor(AOI)
+    )
+
+  if (dataset_name %in% datasets_with_speaker_interaction) {
+    out <- out %>%
+      dplyr::filter(!is.na(speaker)) %>%
+      dplyr::mutate(speaker = factor(speaker))
+  }
+
+  safe_plain_df(out)
+}
+
+# =========================================================
+# FORMELN
+# =========================================================
+
+make_formula_rrt <- function(dataset_name, response = "RRT") {
+  if (dataset_name %in% datasets_with_speaker_interaction) {
+    as.formula(
+      paste(
+        response,
+        "~ condition * speaker + nLetters + (1 | Topic) + (1 | Participant)"
+      )
+    )
+  } else {
+    as.formula(
+      paste(
+        response,
+        "~ condition + nLetters + (1 | Topic) + (1 | Participant)"
+      )
+    )
+  }
+}
+
+make_ziformula_rrt <- function(dataset_name) {
+  if (dataset_name %in% datasets_with_speaker_interaction) {
+    ~ condition * speaker + nLetters
+  } else {
+    ~ condition + nLetters
+  }
+}
+
+# =========================================================
+# RANK DEFICIENCY
+# =========================================================
+
+inspect_rank_deficiency_rrt <- function(df, formula, ziformula) {
+  cond_fixed <- lme4::nobars(formula)
+
+  mf_cond <- tryCatch(
+    model.frame(cond_fixed, data = droplevels(df), na.action = na.omit),
+    error = function(e) NULL
+  )
+
+  X_cond <- tryCatch(
+    if (!is.null(mf_cond)) model.matrix(cond_fixed, data = mf_cond) else NULL,
+    error = function(e) NULL
+  )
+
+  cond_rank <- if (!is.null(X_cond)) qr(X_cond)$rank else NA_integer_
+  cond_ncol <- if (!is.null(X_cond)) ncol(X_cond) else NA_integer_
+  cond_rank_deficient <- if (!is.null(X_cond)) cond_rank < cond_ncol else NA
+
+  cond_redundant_cols <- if (!is.null(X_cond) && isTRUE(cond_rank_deficient)) {
+    qrX <- qr(X_cond)
+    pivot <- qrX$pivot
+    redundant_idx <- pivot[seq.int(qrX$rank + 1, ncol(X_cond))]
+    collapse_unique(colnames(X_cond)[redundant_idx])
+  } else {
+    NA_character_
+  }
+
+  mf_zi <- tryCatch(
+    model.frame(ziformula, data = droplevels(df), na.action = na.omit),
+    error = function(e) NULL
+  )
+
+  X_zi <- tryCatch(
+    if (!is.null(mf_zi)) model.matrix(ziformula, data = mf_zi) else NULL,
+    error = function(e) NULL
+  )
+
+  zi_rank <- if (!is.null(X_zi)) qr(X_zi)$rank else NA_integer_
+  zi_ncol <- if (!is.null(X_zi)) ncol(X_zi) else NA_integer_
+  zi_rank_deficient <- if (!is.null(X_zi)) zi_rank < zi_ncol else NA
+
+  zi_redundant_cols <- if (!is.null(X_zi) && isTRUE(zi_rank_deficient)) {
+    qrX <- qr(X_zi)
+    pivot <- qrX$pivot
+    redundant_idx <- pivot[seq.int(qrX$rank + 1, ncol(X_zi))]
+    collapse_unique(colnames(X_zi)[redundant_idx])
+  } else {
+    NA_character_
+  }
+
+  tibble(
+    cond_rank = cond_rank,
+    cond_ncol = cond_ncol,
+    cond_rank_deficient = cond_rank_deficient,
+    cond_redundant_cols = cond_redundant_cols,
+    zi_rank = zi_rank,
+    zi_ncol = zi_ncol,
+    zi_rank_deficient = zi_rank_deficient,
+    zi_redundant_cols = zi_redundant_cols
+  )
+}
+
+# =========================================================
+# FIT
+# =========================================================
+
+get_rrt_family <- function(family_name) {
+  switch(
+    family_name,
+    ziGamma = ziGamma(link = "log"),
+    truncated_nbinom2 = truncated_nbinom2(link = "log"),
+    stop("Unknown family: ", family_name)
+  )
+}
+
+fit_one_model_rrt <- function(dat, dataset_name, family_name) {
+  formula_i <- make_formula_rrt(dataset_name, response = "RRT")
+  ziformula_i <- make_ziformula_rrt(dataset_name)
+
+  warns <- character()
+  msgs  <- character()
+
+  fit <- withCallingHandlers(
+    tryCatch(
+      glmmTMB::glmmTMB(
+        formula = formula_i,
+        ziformula = ziformula_i,
+        data = dat,
+        family = get_rrt_family(family_name)
+      ),
+      error = function(e) e
+    ),
+    warning = function(w) {
+      warns <<- c(warns, conditionMessage(w))
+      invokeRestart("muffleWarning")
+    },
+    message = function(m) {
+      msgs <<- c(msgs, conditionMessage(m))
+      invokeRestart("muffleMessage")
+    }
+  )
+
+  if (inherits(fit, "error")) {
+    fit_tbl <- tibble(
+      fit_ok = FALSE,
+      fit_error = conditionMessage(fit),
+      fit_warning_text = collapse_unique(warns),
+      fit_message_text = collapse_unique(msgs),
+      n_warning_messages = length(unique(stats::na.omit(warns))),
+      n_messages = length(unique(stats::na.omit(msgs))),
+      fit_nonposdef_hessian = NA,
+      fit_nonzero_convergence = NA,
+      aic = NA_real_,
+      bic = NA_real_,
+      logLik = NA_real_
+    )
+
+    return(list(
+      fit_tbl = fit_tbl,
+      fit_obj = NULL,
+      formula = formula_i,
+      ziformula = ziformula_i
+    ))
+  }
+
+  fit_tbl <- tibble(
+    fit_ok = TRUE,
+    fit_error = NA_character_,
+    fit_warning_text = collapse_unique(warns),
+    fit_message_text = collapse_unique(msgs),
+    n_warning_messages = length(unique(stats::na.omit(warns))),
+    n_messages = length(unique(stats::na.omit(msgs))),
+    fit_nonposdef_hessian = tryCatch(!isTRUE(fit$sdr$pdHess), error = function(e) NA),
+    fit_nonzero_convergence = tryCatch({
+      conv <- fit$fit$convergence
+      if (is.null(conv)) NA else conv != 0
+    }, error = function(e) NA),
+    aic = tryCatch(as.numeric(AIC(fit)), error = function(e) NA_real_),
+    bic = tryCatch(as.numeric(BIC(fit)), error = function(e) NA_real_),
+    logLik = tryCatch(as.numeric(logLik(fit)), error = function(e) NA_real_)
+  )
+
+  list(
+    fit_tbl = fit_tbl,
+    fit_obj = fit,
+    formula = formula_i,
+    ziformula = ziformula_i
+  )
+}
+
+# =========================================================
+# 0ER-CHECK AUF HOLDOUT
+# =========================================================
+
+extract_zero_check_rrt_holdout <- function(fit, newdata, family_name) {
+  prop_zero_observed <- mean(newdata$RRT == 0, na.rm = TRUE)
+
+  prop_zero_predicted <- tryCatch(
+    {
+      if (family_name == "ziGamma") {
+        mean(
+          predict(
+            fit,
+            newdata = droplevels(newdata),
+            type = "zprob",
+            re.form = NULL,
+            allow.new.levels = TRUE
+          ),
+          na.rm = TRUE
+        )
+      } else {
+        0
+      }
+    },
+    error = function(e) NA_real_
+  )
+
+  tibble(
+    prop_zero_observed = prop_zero_observed,
+    prop_zero_predicted = prop_zero_predicted,
+    abs_zero_diff = abs(prop_zero_observed - prop_zero_predicted)
+  )
+}
+
+# =========================================================
+# PARTICIPANT LOO
+# =========================================================
+
+run_rrt_participantloo_fit_screen <- function(dfs) {
+  res_list <- list()
+
+  for (dataset_name in names(dfs)) {
+    dat <- prep_rrt_data(dfs[[dataset_name]], dataset_name)
+    aois <- levels(droplevels(dat$AOI))
+
+    for (aoi_value in aois) {
+      dat_aoi <- dat %>% dplyr::filter(AOI == aoi_value)
+      participants <- levels(droplevels(dat_aoi$Participant))
+
+      for (participant_holdout in participants) {
+        dat_train <- dat_aoi %>% dplyr::filter(Participant != participant_holdout)
+        dat_test  <- dat_aoi %>% dplyr::filter(Participant == participant_holdout)
+
+        for (family_name in families_to_compare) {
+          key <- paste(dataset_name, aoi_value, participant_holdout, family_name, sep = "__")
+
+          if (nrow(dat_train) == 0 || nrow(dat_test) == 0) {
+            res_list[[key]] <- tibble(
+              dataset = dataset_name,
+              AOI = as.character(aoi_value),
+              holdout_participant = as.character(participant_holdout),
+              family = family_name,
+              n_train = nrow(dat_train),
+              n_test = nrow(dat_test),
+              n_topics_train = dplyr::n_distinct(dat_train$Topic),
+              n_participants_train = dplyr::n_distinct(dat_train$Participant),
+              n_conditions_train = dplyr::n_distinct(dat_train$condition),
+              formula = paste(deparse(make_formula_rrt(dataset_name, response = "RRT")), collapse = " "),
+              ziformula = paste(deparse(make_ziformula_rrt(dataset_name)), collapse = " "),
+              cond_rank = NA_real_,
+              cond_ncol = NA_real_,
+              cond_rank_deficient = NA,
+              cond_redundant_cols = NA_character_,
+              zi_rank = NA_real_,
+              zi_ncol = NA_real_,
+              zi_rank_deficient = NA,
+              zi_redundant_cols = NA_character_,
+              fit_ok = FALSE,
+              fit_error = "empty_train_or_test_fold",
+              fit_warning_text = NA_character_,
+              fit_message_text = NA_character_,
+              n_warning_messages = NA_real_,
+              n_messages = NA_real_,
+              fit_nonposdef_hessian = NA,
+              fit_nonzero_convergence = NA,
+              aic = NA_real_,
+              bic = NA_real_,
+              logLik = NA_real_,
+              mae = NA_real_,
+              rmse = NA_real_,
+              prop_zero_observed = mean(dat_test$RRT == 0, na.rm = TRUE),
+              prop_zero_predicted = NA_real_,
+              abs_zero_diff = NA_real_
+            )
+            next
+          }
+
+          fit_res <- fit_one_model_rrt(
+            dat = dat_train,
+            dataset_name = dataset_name,
+            family_name = family_name
+          )
+
+          fit_tbl <- fit_res$fit_tbl
+          fit_obj <- fit_res$fit_obj
+          formula_i <- fit_res$formula
+          ziformula_i <- fit_res$ziformula
+
+          rank_tbl <- inspect_rank_deficiency_rrt(
+            df = dat_train,
+            formula = formula_i,
+            ziformula = ziformula_i
+          )
+
+          pred_test <- if (!is.null(fit_obj)) {
+            tryCatch(
+              as.numeric(
+                predict(
+                  fit_obj,
+                  newdata = droplevels(dat_test),
+                  type = "response",
+                  re.form = NULL,
+                  allow.new.levels = TRUE
+                )
+              ),
+              error = function(e) rep(NA_real_, nrow(dat_test))
+            )
+          } else {
+            rep(NA_real_, nrow(dat_test))
+          }
+
+          zero_tbl <- if (!is.null(fit_obj)) {
+            extract_zero_check_rrt_holdout(
+              fit = fit_obj,
+              newdata = dat_test,
+              family_name = family_name
+            )
+          } else {
+            tibble(
+              prop_zero_observed = mean(dat_test$RRT == 0, na.rm = TRUE),
+              prop_zero_predicted = NA_real_,
+              abs_zero_diff = NA_real_
+            )
+          }
+
+          res_list[[key]] <- tibble(
+            dataset = dataset_name,
+            AOI = as.character(aoi_value),
+            holdout_participant = as.character(participant_holdout),
+            family = family_name,
+            n_train = nrow(dat_train),
+            n_test = nrow(dat_test),
+            n_topics_train = dplyr::n_distinct(dat_train$Topic),
+            n_participants_train = dplyr::n_distinct(dat_train$Participant),
+            n_conditions_train = dplyr::n_distinct(dat_train$condition),
+            formula = paste(deparse(formula_i), collapse = " "),
+            ziformula = paste(deparse(ziformula_i), collapse = " ")
+          ) %>%
+            bind_cols(rank_tbl) %>%
+            bind_cols(fit_tbl) %>%
+            mutate(
+              mae = mae_vec(dat_test$RRT, pred_test),
+              rmse = rmse_vec(dat_test$RRT, pred_test)
+            ) %>%
+            bind_cols(zero_tbl)
+        }
+      }
+    }
+  }
+
+  participantloo_fit_table <- bind_rows(res_list) %>%
+    dplyr::arrange(dataset, AOI, holdout_participant, family)
+
+  family_summary <- participantloo_fit_table %>%
+    dplyr::group_by(family) %>%
+    dplyr::summarise(
+      n_folds = dplyr::n(),
+      n_fit_failed = sum(fit_ok %in% FALSE, na.rm = TRUE),
+      n_nonposdef_hessian = sum(fit_nonposdef_hessian %in% TRUE, na.rm = TRUE),
+      n_nonzero_convergence = sum(fit_nonzero_convergence %in% TRUE, na.rm = TRUE),
+      n_cond_rank_deficient = sum(cond_rank_deficient %in% TRUE, na.rm = TRUE),
+      n_zi_rank_deficient = sum(zi_rank_deficient %in% TRUE, na.rm = TRUE),
+      n_with_warning = sum(!is.na(fit_warning_text), na.rm = TRUE),
+      mean_mae = mean(mae, na.rm = TRUE),
+      median_mae = median(mae, na.rm = TRUE),
+      mean_rmse = mean(rmse, na.rm = TRUE),
+      median_rmse = median(rmse, na.rm = TRUE),
+      mean_abs_zero_diff = mean(abs_zero_diff, na.rm = TRUE),
+      median_abs_zero_diff = median(abs_zero_diff, na.rm = TRUE),
+      mean_aic = mean(aic, na.rm = TRUE),
+      median_aic = median(aic, na.rm = TRUE),
+      .groups = "drop"
+    ) %>%
+    dplyr::arrange(
+      n_fit_failed,
+      n_nonposdef_hessian,
+      n_nonzero_convergence,
+      n_cond_rank_deficient,
+      n_zi_rank_deficient,
+      n_with_warning,
+      mean_rmse,
+      mean_mae,
+      mean_abs_zero_diff
+    )
+
+  dataset_family_summary <- participantloo_fit_table %>%
+    dplyr::group_by(dataset, family) %>%
+    dplyr::summarise(
+      n_folds = dplyr::n(),
+      n_fit_failed = sum(fit_ok %in% FALSE, na.rm = TRUE),
+      n_nonposdef_hessian = sum(fit_nonposdef_hessian %in% TRUE, na.rm = TRUE),
+      n_nonzero_convergence = sum(fit_nonzero_convergence %in% TRUE, na.rm = TRUE),
+      n_cond_rank_deficient = sum(cond_rank_deficient %in% TRUE, na.rm = TRUE),
+      n_zi_rank_deficient = sum(zi_rank_deficient %in% TRUE, na.rm = TRUE),
+      n_with_warning = sum(!is.na(fit_warning_text), na.rm = TRUE),
+      mean_mae = mean(mae, na.rm = TRUE),
+      median_mae = median(mae, na.rm = TRUE),
+      mean_rmse = mean(rmse, na.rm = TRUE),
+      median_rmse = median(rmse, na.rm = TRUE),
+      mean_abs_zero_diff = mean(abs_zero_diff, na.rm = TRUE),
+      median_abs_zero_diff = median(abs_zero_diff, na.rm = TRUE),
+      mean_aic = mean(aic, na.rm = TRUE),
+      median_aic = median(aic, na.rm = TRUE),
+      .groups = "drop"
+    ) %>%
+    dplyr::arrange(
+      dataset,
+      n_fit_failed,
+      n_nonposdef_hessian,
+      n_nonzero_convergence,
+      n_cond_rank_deficient,
+      n_zi_rank_deficient,
+      n_with_warning,
+      mean_rmse,
+      mean_mae,
+      mean_abs_zero_diff
+    )
+
+  dataset_aoi_family_summary <- participantloo_fit_table %>%
+    dplyr::group_by(dataset, AOI, family) %>%
+    dplyr::summarise(
+      n_folds = dplyr::n(),
+      n_fit_failed = sum(fit_ok %in% FALSE, na.rm = TRUE),
+      n_nonposdef_hessian = sum(fit_nonposdef_hessian %in% TRUE, na.rm = TRUE),
+      n_nonzero_convergence = sum(fit_nonzero_convergence %in% TRUE, na.rm = TRUE),
+      n_cond_rank_deficient = sum(cond_rank_deficient %in% TRUE, na.rm = TRUE),
+      n_zi_rank_deficient = sum(zi_rank_deficient %in% TRUE, na.rm = TRUE),
+      n_with_warning = sum(!is.na(fit_warning_text), na.rm = TRUE),
+      mean_mae = mean(mae, na.rm = TRUE),
+      median_mae = median(mae, na.rm = TRUE),
+      mean_rmse = mean(rmse, na.rm = TRUE),
+      median_rmse = median(rmse, na.rm = TRUE),
+      mean_abs_zero_diff = mean(abs_zero_diff, na.rm = TRUE),
+      median_abs_zero_diff = median(abs_zero_diff, na.rm = TRUE),
+      mean_aic = mean(aic, na.rm = TRUE),
+      median_aic = median(aic, na.rm = TRUE),
+      .groups = "drop"
+    ) %>%
+    dplyr::arrange(
+      dataset,
+      AOI,
+      n_fit_failed,
+      n_nonposdef_hessian,
+      n_nonzero_convergence,
+      n_cond_rank_deficient,
+      n_zi_rank_deficient,
+      n_with_warning,
+      mean_rmse,
+      mean_mae,
+      mean_abs_zero_diff
+    )
+
+  list(
+    participantloo_fit_table = participantloo_fit_table,
+    family_summary = family_summary,
+    dataset_family_summary = dataset_family_summary,
+    dataset_aoi_family_summary = dataset_aoi_family_summary
+  )
+}
+
+# =========================================================
+# AUSFÜHREN
+# =========================================================
+
+res_rrt_participantloo_fit <- run_rrt_participantloo_fit_screen(dfs)
+
+# =========================================================
+# OUTPUTS
+# =========================================================
+
+round_df_4(res_rrt_participantloo_fit$participantloo_fit_table)
+
+round_df_4(res_rrt_participantloo_fit$family_summary)
+
+round_df_4(res_rrt_participantloo_fit$dataset_family_summary)
+
+round_df_4(res_rrt_participantloo_fit$dataset_aoi_family_summary)
+```
+Gamma numerisch leicht unterlegen in der RRT
+
+
+

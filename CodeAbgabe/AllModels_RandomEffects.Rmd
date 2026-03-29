@@ -1,0 +1,2333 @@
+---
+title: "AllModels_RandomEffects"
+output: html_document
+---
+
+```{r}
+library(here)
+library(dplyr)
+library(tidyr)
+library(purrr)
+library(tibble)
+library(ggplot2)
+library(lme4)
+library(mgcv)
+options(scipen = 999)
+```
+
+```{r}
+c_bed <- readRDS(here("prepped Data", "C_bed.rds"))
+c_ein <- readRDS(here("prepped Data", "C_ein.rds"))
+n_bed <- readRDS(here("prepped Data", "N_bed.rds"))
+n_ein <- readRDS(here("prepped Data", "N_ein.rds"))
+CS    <- readRDS(here("prepped Data", "CS.rds"))
+INC   <- readRDS(here("prepped Data", "INC.rds"))
+```
+
+```{r}
+c_bed <- c_bed %>% dplyr::filter(!is.na(FRT), TRT > 0)
+c_ein <- c_ein %>% dplyr::filter(!is.na(FRT), TRT > 0)
+n_bed <- n_bed %>% dplyr::filter(!is.na(FRT), TRT > 0)
+n_ein <- n_ein %>% dplyr::filter(!is.na(FRT), TRT > 0)
+CS    <- CS    %>% dplyr::filter(!is.na(FRT), TRT > 0)
+INC <- INC %>% dplyr::filter(!is.na(FRT), TRT > 0)
+```
+
+Wir prüfen Möglichkeit von komplexeren Ramdom Effects auf verschiedenen Familien, pro Modell Variante und auf FRT
+
+
+
+**AGGRERGATED AOIs***
+Random Effect Check progressiver Abbau
+```{r}
+library(dplyr)
+library(tidyr)
+library(purrr)
+library(tibble)
+library(stringr)
+library(glmmTMB)
+
+# =========================================================
+# INPUT
+# Erwartet vorhandene Datensätze:
+# c_bed, c_ein, n_bed, n_ein, CS
+# =========================================================
+
+dfs <- list(
+  c_bed = c_bed,
+  c_ein = c_ein,
+  n_bed = n_bed,
+  n_ein = n_ein,
+  CS    = CS
+)
+
+experiments_with_speaker <- c("n_bed", "n_ein", "CS")
+
+family_names <- c("gamma_log", "nbinom2")
+
+re_structures <- c(
+  "ri_only",
+  "slope_condition_cor",
+  "slope_condition_uncor"
+)
+
+# =========================================================
+# HELFER
+# =========================================================
+
+safe_plain_df <- function(df) {
+  out <- as.data.frame(df, stringsAsFactors = FALSE)
+  rownames(out) <- NULL
+  out
+}
+
+round_df_4 <- function(df) {
+  df %>%
+    mutate(across(where(is.numeric), ~ round(.x, 4)))
+}
+
+collapse_unique <- function(x) {
+  x <- unique(stats::na.omit(x))
+  x <- x[nzchar(x)]
+  if (length(x) == 0) return(NA_character_)
+  paste(x, collapse = " | ")
+}
+
+progress_note <- function(..., verbose = TRUE) {
+  if (!isTRUE(verbose)) return(invisible(NULL))
+  msg <- paste0(...)
+  message(msg)
+  flush.console()
+}
+
+safe_n_distinct <- function(x) {
+  dplyr::n_distinct(stats::na.omit(x))
+}
+
+# =========================================================
+# DATEN
+# =========================================================
+
+prep_re_screen_data <- function(df,
+                                response = "FRT",
+                                use_speaker = FALSE) {
+  needed <- c(response, "nLetters", "Participant", "Topic", "condition", "AOI", "aggr_level")
+  if (use_speaker) needed <- c(needed, "speaker")
+
+  missing_cols <- setdiff(needed, names(df))
+  if (length(missing_cols) > 0) {
+    stop("Fehlende Variablen: ", paste(missing_cols, collapse = ", "))
+  }
+
+  out <- df %>%
+    filter(!is.na(.data[[response]])) %>%
+    filter(.data[[response]] > 0) %>%
+    filter(!is.na(nLetters)) %>%
+    filter(!is.na(Participant), !is.na(Topic), !is.na(condition), !is.na(AOI), !is.na(aggr_level))
+
+  if (use_speaker) {
+    out <- out %>% filter(!is.na(speaker))
+  }
+
+  out <- out %>%
+    mutate(
+      Participant = factor(Participant),
+      Topic = factor(Topic),
+      condition = factor(condition),
+      AOI = factor(AOI),
+      aggr_level = factor(aggr_level)
+    )
+
+  if (use_speaker) {
+    out <- out %>% mutate(speaker = factor(speaker))
+  }
+
+  cluster_sizes <- out %>%
+    distinct(aggr_level, AOI) %>%
+    count(aggr_level, name = "n_aoi_in_cluster")
+
+  list(
+    data = safe_plain_df(out),
+    cluster_sizes = cluster_sizes
+  )
+}
+
+# =========================================================
+# FIXED PART
+# Aggregierte Modelle wie bisher
+# =========================================================
+
+make_fixed_part_cluster <- function(use_speaker = FALSE,
+                                    n_aoi_in_cluster = 1L) {
+  if (n_aoi_in_cluster > 1) {
+    if (use_speaker) {
+      "AOI * condition * speaker + nLetters"
+    } else {
+      "AOI * condition + nLetters"
+    }
+  } else {
+    if (use_speaker) {
+      "condition * speaker + nLetters"
+    } else {
+      "condition + nLetters"
+    }
+  }
+}
+
+# =========================================================
+# RANDOM-EFFECTS-LADDER
+# Nur condition als erster sinnvoller Slope-Test
+# =========================================================
+
+make_random_part <- function(re_structure = "ri_only") {
+  switch(
+    re_structure,
+    ri_only =
+      "(1 | Participant) + (1 | Topic)",
+
+    slope_condition_cor =
+      "(1 + condition | Participant) + (1 + condition | Topic)",
+
+    slope_condition_uncor =
+      "(1 + condition || Participant) + (1 + condition || Topic)",
+
+    stop("Unbekannte Random-Effects-Struktur: ", re_structure)
+  )
+}
+
+make_formula_cluster_re <- function(response = "FRT",
+                                    use_speaker = FALSE,
+                                    n_aoi_in_cluster = 1L,
+                                    re_structure = "ri_only") {
+  fixed_part <- make_fixed_part_cluster(
+    use_speaker = use_speaker,
+    n_aoi_in_cluster = n_aoi_in_cluster
+  )
+
+  random_part <- make_random_part(re_structure = re_structure)
+
+  as.formula(
+    paste(response, "~", fixed_part, "+", random_part)
+  )
+}
+
+# =========================================================
+# FAMILIEN
+# =========================================================
+
+get_glmmtmb_family <- function(family_name) {
+  switch(
+    family_name,
+    gamma_log = Gamma(link = "log"),
+    nbinom2   = glmmTMB::nbinom2(link = "log"),
+    stop("Unbekannte Familie: ", family_name)
+  )
+}
+
+# =========================================================
+# DESIGN-CHECK
+# =========================================================
+
+inspect_design_matrix_identifiability <- function(df,
+                                                  formula) {
+  fixed_formula <- lme4::nobars(formula)
+  mf_fixed <- model.frame(fixed_formula, data = droplevels(df), na.action = na.omit)
+  X <- model.matrix(fixed_formula, data = mf_fixed)
+
+  qrX <- qr(X)
+  rankX <- qrX$rank
+  pX <- ncol(X)
+  rankdef <- rankX < pX
+
+  redundant_cols <- if (rankdef) {
+    pivot <- qrX$pivot
+    redundant_idx <- pivot[seq.int(rankX + 1, pX)]
+    colnames(X)[redundant_idx]
+  } else {
+    character(0)
+  }
+
+  tibble(
+    X_rank = rankX,
+    X_ncol = pX,
+    fit_rank_deficient = rankdef,
+    redundant_cols = collapse_unique(redundant_cols)
+  )
+}
+
+# =========================================================
+# RANDOM-EFFECTS-DIAGNOSTIK
+# =========================================================
+
+extract_re_diagnostics <- function(fit) {
+  vc <- tryCatch(VarCorr(fit), error = function(e) NULL)
+
+  if (is.null(vc)) {
+    return(tibble(
+      re_var_participant_intercept = NA_real_,
+      re_var_topic_intercept = NA_real_,
+      re_min_sd = NA_real_,
+      re_n_sd_lt_1e_4 = NA_real_,
+      re_n_cor_abs_gt_0_95 = NA_real_,
+      re_boundary_flag = NA
+    ))
+  }
+
+  vc_list <- vc$cond
+
+  sd_values <- c()
+  cor_values <- c()
+
+  for (nm in names(vc_list)) {
+    obj <- vc_list[[nm]]
+
+    stddev <- attr(obj, "stddev")
+    if (!is.null(stddev)) {
+      sd_values <- c(sd_values, as.numeric(stddev))
+    }
+
+    cor_mat <- attr(obj, "correlation")
+    if (!is.null(cor_mat)) {
+      cor_mat <- as.matrix(cor_mat)
+      if (nrow(cor_mat) > 1) {
+        cor_vals <- cor_mat[upper.tri(cor_mat)]
+        cor_values <- c(cor_values, as.numeric(cor_vals))
+      }
+    }
+  }
+
+  participant_intercept_var <- tryCatch(
+    as.numeric(vc_list$Participant[1, 1]),
+    error = function(e) NA_real_
+  )
+
+  topic_intercept_var <- tryCatch(
+    as.numeric(vc_list$Topic[1, 1]),
+    error = function(e) NA_real_
+  )
+
+  re_min_sd <- if (length(sd_values) == 0) NA_real_ else min(sd_values, na.rm = TRUE)
+  re_n_sd_lt_1e_4 <- if (length(sd_values) == 0) 0 else sum(sd_values < 1e-4, na.rm = TRUE)
+  re_n_cor_abs_gt_0_95 <- if (length(cor_values) == 0) 0 else sum(abs(cor_values) > 0.95, na.rm = TRUE)
+
+  re_boundary_flag <- (re_n_sd_lt_1e_4 > 0) | (re_n_cor_abs_gt_0_95 > 0)
+
+  tibble(
+    re_var_participant_intercept = participant_intercept_var,
+    re_var_topic_intercept = topic_intercept_var,
+    re_min_sd = re_min_sd,
+    re_n_sd_lt_1e_4 = re_n_sd_lt_1e_4,
+    re_n_cor_abs_gt_0_95 = re_n_cor_abs_gt_0_95,
+    re_boundary_flag = re_boundary_flag
+  )
+}
+
+# =========================================================
+# FITTER
+# =========================================================
+
+fit_glmmtmb_capture <- function(df,
+                                formula,
+                                family_name) {
+  warn_texts <- character()
+  msg_texts  <- character()
+
+  fam <- get_glmmtmb_family(family_name)
+
+  fit <- withCallingHandlers(
+    tryCatch(
+      glmmTMB::glmmTMB(
+        formula = formula,
+        data = droplevels(df),
+        family = fam
+      ),
+      error = function(e) e
+    ),
+    warning = function(w) {
+      warn_texts <<- c(warn_texts, conditionMessage(w))
+      invokeRestart("muffleWarning")
+    },
+    message = function(m) {
+      msg_texts <<- c(msg_texts, conditionMessage(m))
+      invokeRestart("muffleMessage")
+    }
+  )
+
+  if (inherits(fit, "error")) {
+    return(tibble(
+      fit_ok = FALSE,
+      fit_error = conditionMessage(fit),
+      fit_warning_text = collapse_unique(warn_texts),
+      fit_message_text = collapse_unique(msg_texts),
+      n_warning_messages = length(unique(stats::na.omit(warn_texts))),
+      n_messages = length(unique(stats::na.omit(msg_texts))),
+      fit_nonposdef_hessian = NA,
+      fit_nonzero_convergence = NA,
+      aic = NA_real_,
+      bic = NA_real_,
+      logLik = NA_real_
+    ))
+  }
+
+  fit_nonposdef_hessian <- tryCatch(
+    !isTRUE(fit$sdr$pdHess),
+    error = function(e) NA
+  )
+
+  fit_nonzero_convergence <- tryCatch(
+    {
+      conv <- fit$fit$convergence
+      if (is.null(conv)) NA else conv != 0
+    },
+    error = function(e) NA
+  )
+
+  tibble(
+    fit_ok = TRUE,
+    fit_error = NA_character_,
+    fit_warning_text = collapse_unique(warn_texts),
+    fit_message_text = collapse_unique(msg_texts),
+    n_warning_messages = length(unique(stats::na.omit(warn_texts))),
+    n_messages = length(unique(stats::na.omit(msg_texts))),
+    fit_nonposdef_hessian = fit_nonposdef_hessian,
+    fit_nonzero_convergence = fit_nonzero_convergence,
+    aic = tryCatch(as.numeric(AIC(fit)), error = function(e) NA_real_),
+    bic = tryCatch(as.numeric(BIC(fit)), error = function(e) NA_real_),
+    logLik = tryCatch(as.numeric(logLik(fit)), error = function(e) NA_real_)
+  ) %>%
+    bind_cols(extract_re_diagnostics(fit))
+}
+
+# =========================================================
+# EINE FIT-SITUATION
+# =========================================================
+
+fit_one_re_screen_case <- function(df,
+                                   formula,
+                                   family_name) {
+  design_info <- inspect_design_matrix_identifiability(
+    df = df,
+    formula = formula
+  )
+
+  fit_info <- fit_glmmtmb_capture(
+    df = df,
+    formula = formula,
+    family_name = family_name
+  )
+
+  bind_cols(design_info, fit_info)
+}
+
+# =========================================================
+# EIN EXPERIMENT
+# =========================================================
+
+run_re_screen_one_experiment <- function(df,
+                                         exp_name,
+                                         response = "FRT",
+                                         use_speaker = FALSE,
+                                         verbose = TRUE) {
+  prep <- prep_re_screen_data(
+    df = df,
+    response = response,
+    use_speaker = use_speaker
+  )
+
+  dat <- prep$data
+  cluster_sizes <- prep$cluster_sizes
+  aggr_levels <- unique(as.character(dat$aggr_level))
+
+  purrr::map_dfr(family_names, function(fam_i) {
+    purrr::map_dfr(aggr_levels, function(aggr_i) {
+      dat_cluster <- dat %>%
+        filter(as.character(aggr_level) == aggr_i)
+
+      n_aoi_cluster <- cluster_sizes$n_aoi_in_cluster[
+        match(aggr_i, cluster_sizes$aggr_level)
+      ]
+
+      purrr::map_dfr(re_structures, function(re_i) {
+        formula_i <- make_formula_cluster_re(
+          response = response,
+          use_speaker = use_speaker,
+          n_aoi_in_cluster = n_aoi_cluster,
+          re_structure = re_i
+        )
+
+        progress_note(
+          "[RE] exp=", exp_name,
+          " family=", fam_i,
+          " cluster=", aggr_i,
+          " re=", re_i,
+          " n=", nrow(dat_cluster),
+          verbose = verbose
+        )
+
+        fit_out <- fit_one_re_screen_case(
+          df = dat_cluster,
+          formula = formula_i,
+          family_name = fam_i
+        )
+
+        tibble(
+          experiment = exp_name,
+          family_name = fam_i,
+          aggr_level = aggr_i,
+          random_effects_structure = re_i,
+          n_aoi_in_cluster = n_aoi_cluster,
+          cluster_formula_type = ifelse(n_aoi_cluster > 1, "AOI_condition", "condition_only"),
+          n_obs = nrow(dat_cluster),
+          n_topics = dplyr::n_distinct(dat_cluster$Topic),
+          n_participants = dplyr::n_distinct(dat_cluster$Participant),
+          n_condition_levels = dplyr::n_distinct(dat_cluster$condition),
+          formula = paste(deparse(formula_i), collapse = " ")
+        ) %>%
+          bind_cols(fit_out)
+      })
+    })
+  })
+}
+
+# =========================================================
+# ÜBER ALLE EXPERIMENTE
+# =========================================================
+
+run_re_screen_all <- function(dfs,
+                              response = "FRT",
+                              experiments_with_speaker = c("n_bed", "n_ein", "CS"),
+                              verbose = TRUE) {
+  full_all <- purrr::imap_dfr(dfs, function(df, exp_name) {
+    run_re_screen_one_experiment(
+      df = df,
+      exp_name = exp_name,
+      response = response,
+      use_speaker = exp_name %in% experiments_with_speaker,
+      verbose = verbose
+    )
+  })
+
+  decision_table <- full_all %>%
+    group_by(experiment, aggr_level, family_name) %>%
+    mutate(
+      best_aic = suppressWarnings(min(aic, na.rm = TRUE)),
+      best_aic = ifelse(is.infinite(best_aic), NA_real_, best_aic),
+      delta_aic = aic - best_aic,
+      aic_group = case_when(
+        is.na(delta_aic) ~ NA_character_,
+        delta_aic <= 2 ~ "best_or_close",
+        delta_aic <= 6 ~ "some_support",
+        TRUE ~ "weak"
+      ),
+      stability_group = case_when(
+        fit_ok %in% FALSE ~ "fit_failed",
+        fit_nonposdef_hessian %in% TRUE ~ "nonposdef_hessian",
+        fit_nonzero_convergence %in% TRUE ~ "nonzero_convergence",
+        re_boundary_flag %in% TRUE ~ "re_boundary",
+        TRUE ~ "stable"
+      )
+    ) %>%
+    arrange(
+      dplyr::desc(fit_ok),
+      fit_nonposdef_hessian,
+      fit_nonzero_convergence,
+      re_boundary_flag,
+      delta_aic,
+      .by_group = TRUE
+    ) %>%
+    mutate(rank_within_family_cluster = dplyr::row_number()) %>%
+    ungroup()
+
+  best_per_family_cluster <- decision_table %>%
+    filter(rank_within_family_cluster == 1) %>%
+    arrange(experiment, aggr_level, family_name)
+
+  summary_by_experiment <- decision_table %>%
+    group_by(experiment, family_name, random_effects_structure) %>%
+    summarise(
+      n_clusters = dplyr::n(),
+      n_fit_failed = sum(fit_ok %in% FALSE, na.rm = TRUE),
+      n_nonposdef_hessian = sum(fit_nonposdef_hessian %in% TRUE, na.rm = TRUE),
+      n_nonzero_convergence = sum(fit_nonzero_convergence %in% TRUE, na.rm = TRUE),
+      n_rank_deficient = sum(fit_rank_deficient %in% TRUE, na.rm = TRUE),
+      n_re_boundary = sum(re_boundary_flag %in% TRUE, na.rm = TRUE),
+      n_aic_best_or_close = sum(aic_group %in% c("best_or_close"), na.rm = TRUE),
+      mean_delta_aic = mean(delta_aic, na.rm = TRUE),
+      mean_aic = mean(aic, na.rm = TRUE),
+      .groups = "drop"
+    )
+
+  summary_overall <- decision_table %>%
+    group_by(family_name, random_effects_structure) %>%
+    summarise(
+      n_clusters = dplyr::n(),
+      n_fit_failed = sum(fit_ok %in% FALSE, na.rm = TRUE),
+      n_nonposdef_hessian = sum(fit_nonposdef_hessian %in% TRUE, na.rm = TRUE),
+      n_nonzero_convergence = sum(fit_nonzero_convergence %in% TRUE, na.rm = TRUE),
+      n_rank_deficient = sum(fit_rank_deficient %in% TRUE, na.rm = TRUE),
+      n_re_boundary = sum(re_boundary_flag %in% TRUE, na.rm = TRUE),
+      n_aic_best_or_close = sum(aic_group %in% c("best_or_close"), na.rm = TRUE),
+      mean_delta_aic = mean(delta_aic, na.rm = TRUE),
+      mean_aic = mean(aic, na.rm = TRUE),
+      .groups = "drop"
+    ) %>%
+    arrange(family_name, n_fit_failed, n_nonposdef_hessian, n_nonzero_convergence, n_re_boundary, mean_delta_aic)
+
+  list(
+    full_all = full_all,
+    decision_table = decision_table,
+    best_per_family_cluster = best_per_family_cluster,
+    summary_by_experiment = summary_by_experiment,
+    summary_overall = summary_overall
+  )
+}
+
+# =========================================================
+# AUSFÜHREN
+# =========================================================
+
+res_re_screen_frt <- run_re_screen_all(
+  dfs = dfs,
+  response = "FRT",
+  experiments_with_speaker = experiments_with_speaker,
+  verbose = TRUE
+)
+
+# =========================================================
+# OUTPUTS
+# =========================================================
+
+#round_df_4(res_re_screen_frt$full_all)
+#round_df_4(res_re_screen_frt$decision_table)
+round_df_4(res_re_screen_frt$best_per_family_cluster)
+#round_df_4(res_re_screen_frt$summary_by_experiment)
+round_df_4(res_re_screen_frt$summary_overall)
+```
+
+Die Idee ist, dass man nicht direkt von einem maximalen Modell auf ein sehr einfaches Modell springen sollte. Stattdessen prüft man, ob Random Slopes für condition überhaupt stabil und sinnvoll schätzbar sind.
+
+Zur Prüfung der Random-Effects-Struktur wurden für die Gamma- und NegBin2-Modelle drei Varianten verglichen: ein Modell mit gekreuzten Random Intercepts, ein Modell mit zusätzlichen korrelierten Random Slopes für condition sowie ein Modell mit unkorrelierten Random Slopes. Die Modelle mit korrelierten Random Slopes zeigten in fast allen Clustern Konvergenzprobleme und häufig auch nicht positiv definite Hessian-Matrizen. Die Modelle mit unkorrelierten Random Slopes waren zwar etwas stabiler, zeigten jedoch häufig Boundary-Lösungen und lieferten nur selten eine Verbesserung gegenüber dem Random-Intercept-Modell. Die Random-Intercept-Modelle waren dagegen durchgehend stabil und lagen auch hinsichtlich des AIC fast immer im besten oder nahezu besten Bereich. Insgesamt ergab sich daher keine hinreichende empirische Unterstützung für die Aufnahme von Random Slopes für condition, sodass für die Hauptanalysen die gekreuzte Random-Intercept-Struktur beibehalten wurde.
+
+
+**SINGLE AOI UNNORMIERT**
+*Gamma*
+```{r}
+library(dplyr)
+library(tidyr)
+library(purrr)
+library(stringr)
+library(glmmTMB)
+library(tibble)
+
+# =========================================================
+# INPUT
+# =========================================================
+dfs <- list(
+  c_bed = c_bed,
+  c_ein = c_ein,
+  n_bed = n_bed,
+  n_ein = n_ein,
+  CS    = CS
+)
+
+datasets_with_speaker_interaction <- c("n_bed", "n_ein", "CS")
+re_candidates <- c("A", "B", "C")
+
+# =========================================================
+# HELPERS
+# =========================================================
+collapse_unique <- function(x) {
+  x <- unique(x[!is.na(x) & nzchar(x)])
+  if (length(x) == 0) NA_character_ else paste(x, collapse = " | ")
+}
+
+classify_warning_type <- function(warning_message, error_message = NA_character_) {
+  txt <- paste(c(error_message, warning_message), collapse = " | ")
+
+  dplyr::case_when(
+    is.na(txt) || !nzchar(txt) ~ "none",
+    str_detect(txt, regex("non-positive-definite Hessian|failed to invert Hessian|pdHess", ignore_case = TRUE)) ~ "hessian",
+    str_detect(txt, regex("false convergence", ignore_case = TRUE)) ~ "false_convergence",
+    str_detect(txt, regex("NA/NaN function evaluation", ignore_case = TRUE)) ~ "nan_eval",
+    str_detect(txt, regex("singular", ignore_case = TRUE)) ~ "singular",
+    TRUE ~ "other"
+  )
+}
+
+prep_dataset <- function(df, dataset_name) {
+  out <- df %>%
+    dplyr::filter(
+      !is.na(FRT),
+      FRT > 0,
+      !is.na(AOI),
+      !is.na(Participant),
+      !is.na(Topic),
+      !is.na(condition),
+      !is.na(nLetters)
+    ) %>%
+    dplyr::mutate(
+      Participant = factor(Participant),
+      Topic = factor(Topic),
+      AOI = factor(AOI),
+      condition = factor(condition)
+    )
+
+  if (dataset_name %in% datasets_with_speaker_interaction) {
+    out <- out %>%
+      dplyr::filter(!is.na(speaker)) %>%
+      dplyr::mutate(speaker = factor(speaker))
+  }
+
+  as.data.frame(out, stringsAsFactors = FALSE)
+}
+
+get_fixed_formula <- function(dataset_name) {
+  if (dataset_name %in% datasets_with_speaker_interaction) {
+    "condition * speaker + nLetters"
+  } else {
+    "condition + nLetters"
+  }
+}
+
+make_formula_re <- function(dataset_name, re_candidate) {
+  fixed_part <- get_fixed_formula(dataset_name)
+
+  re_part <- switch(
+    re_candidate,
+    A = "(1 | Participant) + (1 | Topic)",
+    B = "(1 + condition | Participant) + (1 + condition | Topic)",
+    C = "diag(condition + 1 | Participant) + diag(condition + 1 | Topic)",
+    stop("Unknown re_candidate: ", re_candidate)
+  )
+
+  as.formula(
+    paste0("FRT ~ ", fixed_part, " + ", re_part)
+  )
+}
+
+fit_one_model <- function(dat, dataset_name, re_candidate) {
+  glmmTMB(
+    formula = make_formula_re(dataset_name, re_candidate),
+    data = dat,
+    family = Gamma(link = "log")
+  )
+}
+
+# =========================================================
+# RANDOM-EFFECT EXTRACTION
+# =========================================================
+extract_varcomp_table <- function(fit, dataset_name, aoi_value, re_candidate) {
+  vc <- tryCatch(VarCorr(fit), error = function(e) NULL)
+  if (is.null(vc) || is.null(vc$cond)) return(tibble())
+
+  purrr::imap_dfr(vc$cond, function(mat, grp_name) {
+    mm <- as.matrix(mat)
+
+    if (nrow(mm) == 0) return(tibble())
+
+    vars <- diag(mm)
+    tibble(
+      dataset = dataset_name,
+      AOI = as.character(aoi_value),
+      re_candidate = re_candidate,
+      group = grp_name,
+      term = rownames(mm),
+      variance = as.numeric(vars)
+    )
+  })
+}
+
+extract_correlation_table <- function(fit, dataset_name, aoi_value, re_candidate) {
+  vc <- tryCatch(VarCorr(fit), error = function(e) NULL)
+  if (is.null(vc) || is.null(vc$cond)) return(tibble())
+
+  purrr::imap_dfr(vc$cond, function(mat, grp_name) {
+    mm <- as.matrix(mat)
+    if (nrow(mm) < 2) return(tibble())
+
+    cors <- cov2cor(mm)
+
+    idx <- which(upper.tri(cors), arr.ind = TRUE)
+    if (nrow(idx) == 0) return(tibble())
+
+    tibble(
+      dataset = dataset_name,
+      AOI = as.character(aoi_value),
+      re_candidate = re_candidate,
+      group = grp_name,
+      term1 = rownames(cors)[idx[, 1]],
+      term2 = colnames(cors)[idx[, 2]],
+      correlation = cors[idx]
+    )
+  })
+}
+
+extract_fit_info <- function(fit, dataset_name, aoi_value, re_candidate, warns, msgs) {
+  s <- tryCatch(summary(fit), error = function(e) NULL)
+
+  pd_hessian <- NA
+  convergence_code <- NA_real_
+
+  if (!is.null(s)) {
+    if (!is.null(s$sdr$pdHess)) pd_hessian <- isTRUE(s$sdr$pdHess)
+    if (!is.null(s$fit$convergence)) convergence_code <- s$fit$convergence
+  }
+
+  tibble(
+    dataset = dataset_name,
+    AOI = as.character(aoi_value),
+    re_candidate = re_candidate,
+    fit_ok = TRUE,
+    has_warning = !is.na(collapse_unique(warns)),
+    warning_message = collapse_unique(warns),
+    error_message = NA_character_,
+    other_message = collapse_unique(msgs),
+    warning_type = classify_warning_type(collapse_unique(warns), NA_character_),
+    pd_hessian = pd_hessian,
+    convergence_code = convergence_code,
+    AIC = tryCatch(AIC(fit), error = function(e) NA_real_),
+    BIC = tryCatch(BIC(fit), error = function(e) NA_real_),
+    logLik = tryCatch(as.numeric(logLik(fit)), error = function(e) NA_real_)
+  )
+}
+
+# =========================================================
+# FIT ALL MODELS
+# =========================================================
+fit_info_list <- list()
+varcomp_list <- list()
+correlation_list <- list()
+
+for (dataset_name in names(dfs)) {
+  dat <- prep_dataset(dfs[[dataset_name]], dataset_name)
+
+  for (aoi_value in levels(droplevels(dat$AOI))) {
+    dat_aoi <- dat %>% dplyr::filter(AOI == aoi_value)
+
+    for (re_candidate in re_candidates) {
+      warns <- character(0)
+      msgs <- character(0)
+
+      mod <- withCallingHandlers(
+        tryCatch(
+          fit_one_model(
+            dat = dat_aoi,
+            dataset_name = dataset_name,
+            re_candidate = re_candidate
+          ),
+          error = function(e) e
+        ),
+        warning = function(w) {
+          warns <<- c(warns, conditionMessage(w))
+          invokeRestart("muffleWarning")
+        },
+        message = function(m) {
+          msgs <<- c(msgs, conditionMessage(m))
+          invokeRestart("muffleMessage")
+        }
+      )
+
+      key <- paste(dataset_name, aoi_value, re_candidate, sep = "__")
+
+      if (inherits(mod, "error")) {
+        fit_info_list[[key]] <- tibble(
+          dataset = dataset_name,
+          AOI = as.character(aoi_value),
+          re_candidate = re_candidate,
+          fit_ok = FALSE,
+          has_warning = !is.na(collapse_unique(warns)),
+          warning_message = collapse_unique(warns),
+          error_message = conditionMessage(mod),
+          other_message = collapse_unique(msgs),
+          warning_type = classify_warning_type(collapse_unique(warns), conditionMessage(mod)),
+          pd_hessian = NA,
+          convergence_code = NA_real_,
+          AIC = NA_real_,
+          BIC = NA_real_,
+          logLik = NA_real_
+        )
+        next
+      }
+
+      fit_info_list[[key]] <- extract_fit_info(
+        fit = mod,
+        dataset_name = dataset_name,
+        aoi_value = aoi_value,
+        re_candidate = re_candidate,
+        warns = warns,
+        msgs = msgs
+      )
+
+      varcomp_list[[key]] <- extract_varcomp_table(
+        fit = mod,
+        dataset_name = dataset_name,
+        aoi_value = aoi_value,
+        re_candidate = re_candidate
+      )
+
+      correlation_list[[key]] <- extract_correlation_table(
+        fit = mod,
+        dataset_name = dataset_name,
+        aoi_value = aoi_value,
+        re_candidate = re_candidate
+      )
+    }
+  }
+}
+
+# =========================================================
+# TABLES
+# =========================================================
+fit_info_table <- bind_rows(fit_info_list) %>%
+  group_by(dataset, AOI) %>%
+  mutate(
+    best_AIC = min(AIC, na.rm = TRUE),
+    delta_AIC = AIC - best_AIC,
+    aic_group = case_when(
+      is.na(AIC) ~ "fit_fail",
+      delta_AIC == 0 ~ "winner",
+      delta_AIC <= 2 ~ "equal_best",
+      delta_AIC <= 6 ~ "some_support",
+      TRUE ~ "weak"
+    )
+  ) %>%
+  ungroup() %>%
+  arrange(dataset, AOI, delta_AIC, re_candidate)
+
+varcomp_table <- bind_rows(varcomp_list) %>%
+  arrange(dataset, AOI, re_candidate, group, term)
+
+correlation_table <- bind_rows(correlation_list) %>%
+  arrange(dataset, AOI, re_candidate, group, term1, term2)
+
+# kompakte Varianz-Zusammenfassung
+varcomp_summary <- varcomp_table %>%
+  group_by(dataset, AOI, re_candidate, group) %>%
+  summarise(
+    n_terms = n(),
+    min_variance = min(variance, na.rm = TRUE),
+    max_variance = max(variance, na.rm = TRUE),
+    mean_variance = mean(variance, na.rm = TRUE),
+    n_near_zero_var = sum(variance < 1e-6, na.rm = TRUE),
+    .groups = "drop"
+  ) %>%
+  arrange(dataset, AOI, re_candidate, group)
+
+# besonders auffällige Korrelationen
+correlation_flags <- correlation_table %>%
+  mutate(
+    abs_correlation = abs(correlation),
+    near_boundary_corr = abs_correlation > 0.95
+  ) %>%
+  arrange(desc(abs_correlation), dataset, AOI, re_candidate)
+
+# Gesamtübersicht pro RE-Kandidat
+re_summary <- fit_info_table %>%
+  group_by(re_candidate) %>%
+  summarise(
+    n_cells = n(),
+    n_fit_fail = sum(fit_ok %in% FALSE, na.rm = TRUE),
+    n_warning = sum(has_warning %in% TRUE, na.rm = TRUE),
+    n_hessian = sum(warning_type == "hessian", na.rm = TRUE),
+    n_false_convergence = sum(warning_type == "false_convergence", na.rm = TRUE),
+    n_nan_eval = sum(warning_type == "nan_eval", na.rm = TRUE),
+    mean_delta_AIC = mean(delta_AIC, na.rm = TRUE),
+    median_delta_AIC = median(delta_AIC, na.rm = TRUE),
+    n_best_or_equal = sum(aic_group %in% c("winner", "equal_best"), na.rm = TRUE),
+    .groups = "drop"
+  ) %>%
+  arrange(n_fit_fail, n_warning, mean_delta_AIC)
+
+# kompakte Entscheidungstabelle pro Zelle
+re_decision_table <- fit_info_table %>%
+  left_join(
+    varcomp_summary %>%
+      group_by(dataset, AOI, re_candidate) %>%
+      summarise(
+        total_near_zero_var = sum(n_near_zero_var, na.rm = TRUE),
+        .groups = "drop"
+      ),
+    by = c("dataset", "AOI", "re_candidate")
+  ) %>%
+  left_join(
+    correlation_flags %>%
+      group_by(dataset, AOI, re_candidate) %>%
+      summarise(
+        n_near_boundary_corr = sum(near_boundary_corr, na.rm = TRUE),
+        max_abs_correlation = max(abs_correlation, na.rm = TRUE),
+        .groups = "drop"
+      ),
+    by = c("dataset", "AOI", "re_candidate")
+  ) %>%
+  mutate(
+    total_near_zero_var = dplyr::coalesce(total_near_zero_var, 0L),
+    n_near_boundary_corr = dplyr::coalesce(n_near_boundary_corr, 0L),
+    max_abs_correlation = dplyr::coalesce(max_abs_correlation, NA_real_)
+  ) %>%
+  arrange(dataset, AOI, delta_AIC, re_candidate)
+
+# =========================================================
+# OUTPUTS
+# =========================================================
+fit_info_table
+#varcomp_table
+#correlation_table
+#varcomp_summary
+#correlation_flags
+#re_decision_table
+re_summary
+```
+
+*NegBin2 und Normal*
+```{r}
+library(dplyr)
+library(tidyr)
+library(purrr)
+library(stringr)
+library(glmmTMB)
+library(lme4)
+library(tibble)
+
+# =========================================================
+# INPUT
+# =========================================================
+dfs <- list(
+  c_bed = c_bed,
+  c_ein = c_ein,
+  n_bed = n_bed,
+  n_ein = n_ein,
+  CS    = CS
+)
+
+datasets_with_speaker_interaction <- c("n_bed", "n_ein", "CS")
+re_candidates <- c("A", "B", "C")
+families_to_compare <- c("normal", "negbinomial")
+tol_aic <- 2
+
+# =========================================================
+# HELPERS
+# =========================================================
+collapse_unique <- function(x) {
+  x <- unique(x[!is.na(x) & nzchar(x)])
+  if (length(x) == 0) NA_character_ else paste(x, collapse = " | ")
+}
+
+classify_warning_type <- function(warning_message, error_message = NA_character_) {
+  txt <- paste(c(error_message, warning_message), collapse = " | ")
+
+  dplyr::case_when(
+    is.na(txt) || !nzchar(txt) ~ "none",
+    str_detect(txt, regex("non-positive-definite Hessian|failed to invert Hessian|pdHess", ignore_case = TRUE)) ~ "hessian",
+    str_detect(txt, regex("false convergence", ignore_case = TRUE)) ~ "false_convergence",
+    str_detect(txt, regex("NA/NaN function evaluation", ignore_case = TRUE)) ~ "nan_eval",
+    str_detect(txt, regex("singular", ignore_case = TRUE)) ~ "singular",
+    TRUE ~ "other"
+  )
+}
+
+prep_dataset <- function(df, dataset_name) {
+  out <- df %>%
+    dplyr::filter(
+      !is.na(FRT),
+      FRT > 0,
+      !is.na(AOI),
+      !is.na(Participant),
+      !is.na(Topic),
+      !is.na(condition),
+      !is.na(nLetters)
+    ) %>%
+    dplyr::mutate(
+      Participant = factor(Participant),
+      Topic = factor(Topic),
+      AOI = factor(AOI),
+      condition = factor(condition)
+    )
+
+  if (dataset_name %in% datasets_with_speaker_interaction) {
+    out <- out %>%
+      dplyr::filter(!is.na(speaker)) %>%
+      dplyr::mutate(speaker = factor(speaker))
+  }
+
+  as.data.frame(out, stringsAsFactors = FALSE)
+}
+
+get_fixed_formula <- function(dataset_name) {
+  if (dataset_name %in% datasets_with_speaker_interaction) {
+    "condition * speaker + nLetters"
+  } else {
+    "condition + nLetters"
+  }
+}
+
+make_formula_re <- function(dataset_name, re_candidate, family_name) {
+  fixed_part <- get_fixed_formula(dataset_name)
+
+  re_part <- switch(
+    re_candidate,
+    A = "(1 | Participant) + (1 | Topic)",
+    B = "(1 + condition | Participant) + (1 + condition | Topic)",
+    C = if (family_name == "normal") {
+      "(1 + condition || Participant) + (1 + condition || Topic)"
+    } else {
+      "diag(condition + 1 | Participant) + diag(condition + 1 | Topic)"
+    },
+    stop("Unknown re_candidate: ", re_candidate)
+  )
+
+  as.formula(
+    paste0("FRT ~ ", fixed_part, " + ", re_part)
+  )
+}
+
+fit_one_model <- function(dat, dataset_name, re_candidate, family_name) {
+  form <- make_formula_re(dataset_name, re_candidate, family_name)
+
+  if (family_name == "normal") {
+    return(
+      lme4::lmer(
+        formula = form,
+        data = dat,
+        REML = FALSE,
+        control = lme4::lmerControl(
+          check.rankX = "message+drop.cols",
+          check.conv.singular = "message",
+          check.conv.hess = "warning",
+          check.conv.grad = "warning"
+        )
+      )
+    )
+  }
+
+  if (family_name == "negbinomial") {
+    return(
+      glmmTMB(
+        formula = form,
+        data = dat,
+        family = nbinom2(link = "log")
+      )
+    )
+  }
+
+  stop("Unknown family: ", family_name)
+}
+
+# =========================================================
+# RANDOM-EFFECT EXTRACTION
+# =========================================================
+extract_varcomp_table <- function(fit, dataset_name, aoi_value, re_candidate, family_name) {
+
+  if (inherits(fit, "glmmTMB")) {
+    vc <- tryCatch(VarCorr(fit), error = function(e) NULL)
+    if (is.null(vc) || is.null(vc$cond)) return(tibble())
+
+    return(
+      purrr::imap_dfr(vc$cond, function(mat, grp_name) {
+        mm <- as.matrix(mat)
+        if (nrow(mm) == 0) return(tibble())
+
+        vars <- diag(mm)
+        tibble(
+          dataset = dataset_name,
+          AOI = as.character(aoi_value),
+          family = family_name,
+          re_candidate = re_candidate,
+          group = grp_name,
+          term = rownames(mm),
+          variance = as.numeric(vars)
+        )
+      })
+    )
+  }
+
+  if (inherits(fit, "lmerMod")) {
+    vc <- tryCatch(VarCorr(fit), error = function(e) NULL)
+    if (is.null(vc)) return(tibble())
+
+    vc_df <- as.data.frame(vc)
+
+    return(
+      vc_df %>%
+        dplyr::filter(is.na(var2)) %>%
+        dplyr::transmute(
+          dataset = dataset_name,
+          AOI = as.character(aoi_value),
+          family = family_name,
+          re_candidate = re_candidate,
+          group = grp,
+          term = var1,
+          variance = vcov
+        )
+    )
+  }
+
+  tibble()
+}
+
+extract_correlation_table <- function(fit, dataset_name, aoi_value, re_candidate, family_name) {
+
+  if (inherits(fit, "glmmTMB")) {
+    vc <- tryCatch(VarCorr(fit), error = function(e) NULL)
+    if (is.null(vc) || is.null(vc$cond)) return(tibble())
+
+    return(
+      purrr::imap_dfr(vc$cond, function(mat, grp_name) {
+        mm <- as.matrix(mat)
+        if (nrow(mm) < 2) return(tibble())
+
+        cors <- cov2cor(mm)
+        idx <- which(upper.tri(cors), arr.ind = TRUE)
+        if (nrow(idx) == 0) return(tibble())
+
+        tibble(
+          dataset = dataset_name,
+          AOI = as.character(aoi_value),
+          family = family_name,
+          re_candidate = re_candidate,
+          group = grp_name,
+          term1 = rownames(cors)[idx[, 1]],
+          term2 = colnames(cors)[idx[, 2]],
+          correlation = cors[idx]
+        )
+      })
+    )
+  }
+
+  if (inherits(fit, "lmerMod")) {
+    vc <- tryCatch(VarCorr(fit), error = function(e) NULL)
+    if (is.null(vc)) return(tibble())
+
+    vc_df <- as.data.frame(vc)
+
+    return(
+      vc_df %>%
+        dplyr::filter(!is.na(var2), var1 != "sdcor", var2 != "sdcor") %>%
+        dplyr::transmute(
+          dataset = dataset_name,
+          AOI = as.character(aoi_value),
+          family = family_name,
+          re_candidate = re_candidate,
+          group = grp,
+          term1 = var1,
+          term2 = var2,
+          correlation = sdcor
+        )
+    )
+  }
+
+  tibble()
+}
+
+extract_fit_info <- function(fit, dataset_name, aoi_value, re_candidate, family_name, warns, msgs) {
+
+  if (inherits(fit, "glmmTMB")) {
+    s <- tryCatch(summary(fit), error = function(e) NULL)
+
+    pd_hessian <- NA
+    convergence_code <- NA_real_
+
+    if (!is.null(s)) {
+      if (!is.null(s$sdr$pdHess)) pd_hessian <- isTRUE(s$sdr$pdHess)
+      if (!is.null(s$fit$convergence)) convergence_code <- s$fit$convergence
+    }
+
+    return(
+      tibble(
+        dataset = dataset_name,
+        AOI = as.character(aoi_value),
+        family = family_name,
+        re_candidate = re_candidate,
+        fit_ok = TRUE,
+        has_warning = !is.na(collapse_unique(warns)),
+        warning_message = collapse_unique(warns),
+        error_message = NA_character_,
+        other_message = collapse_unique(msgs),
+        warning_type = classify_warning_type(collapse_unique(warns), NA_character_),
+        pd_hessian = pd_hessian,
+        convergence_code = convergence_code,
+        AIC = tryCatch(AIC(fit), error = function(e) NA_real_),
+        BIC = tryCatch(BIC(fit), error = function(e) NA_real_),
+        logLik = tryCatch(as.numeric(logLik(fit)), error = function(e) NA_real_)
+      )
+    )
+  }
+
+  if (inherits(fit, "lmerMod")) {
+    singular_fit <- tryCatch(lme4::isSingular(fit, tol = 1e-5), error = function(e) NA)
+
+    return(
+      tibble(
+        dataset = dataset_name,
+        AOI = as.character(aoi_value),
+        family = family_name,
+        re_candidate = re_candidate,
+        fit_ok = TRUE,
+        has_warning = !is.na(collapse_unique(warns)),
+        warning_message = collapse_unique(warns),
+        error_message = NA_character_,
+        other_message = collapse_unique(msgs),
+        warning_type = classify_warning_type(collapse_unique(warns), NA_character_),
+        pd_hessian = NA,
+        convergence_code = NA_real_,
+        singular_fit = singular_fit,
+        AIC = tryCatch(AIC(fit), error = function(e) NA_real_),
+        BIC = tryCatch(BIC(fit), error = function(e) NA_real_),
+        logLik = tryCatch(as.numeric(logLik(fit)), error = function(e) NA_real_)
+      )
+    )
+  }
+
+  tibble()
+}
+
+# =========================================================
+# FIT ALL MODELS
+# =========================================================
+fit_info_list <- list()
+varcomp_list <- list()
+correlation_list <- list()
+
+for (dataset_name in names(dfs)) {
+  dat <- prep_dataset(dfs[[dataset_name]], dataset_name)
+
+  for (aoi_value in levels(droplevels(dat$AOI))) {
+    dat_aoi <- dat %>% dplyr::filter(AOI == aoi_value)
+
+    for (family_name in families_to_compare) {
+      for (re_candidate in re_candidates) {
+
+        warns <- character(0)
+        msgs <- character(0)
+
+        mod <- withCallingHandlers(
+          tryCatch(
+            fit_one_model(
+              dat = dat_aoi,
+              dataset_name = dataset_name,
+              re_candidate = re_candidate,
+              family_name = family_name
+            ),
+            error = function(e) e
+          ),
+          warning = function(w) {
+            warns <<- c(warns, conditionMessage(w))
+            invokeRestart("muffleWarning")
+          },
+          message = function(m) {
+            msgs <<- c(msgs, conditionMessage(m))
+            invokeRestart("muffleMessage")
+          }
+        )
+
+        key <- paste(dataset_name, aoi_value, family_name, re_candidate, sep = "__")
+
+        if (inherits(mod, "error")) {
+          fit_info_list[[key]] <- tibble(
+            dataset = dataset_name,
+            AOI = as.character(aoi_value),
+            family = family_name,
+            re_candidate = re_candidate,
+            fit_ok = FALSE,
+            has_warning = !is.na(collapse_unique(warns)),
+            warning_message = collapse_unique(warns),
+            error_message = conditionMessage(mod),
+            other_message = collapse_unique(msgs),
+            warning_type = classify_warning_type(collapse_unique(warns), conditionMessage(mod)),
+            pd_hessian = NA,
+            convergence_code = NA_real_,
+            singular_fit = NA,
+            AIC = NA_real_,
+            BIC = NA_real_,
+            logLik = NA_real_
+          )
+          next
+        }
+
+        fit_info_list[[key]] <- extract_fit_info(
+          fit = mod,
+          dataset_name = dataset_name,
+          aoi_value = aoi_value,
+          re_candidate = re_candidate,
+          family_name = family_name,
+          warns = warns,
+          msgs = msgs
+        )
+
+        varcomp_list[[key]] <- extract_varcomp_table(
+          fit = mod,
+          dataset_name = dataset_name,
+          aoi_value = aoi_value,
+          re_candidate = re_candidate,
+          family_name = family_name
+        )
+
+        correlation_list[[key]] <- extract_correlation_table(
+          fit = mod,
+          dataset_name = dataset_name,
+          aoi_value = aoi_value,
+          re_candidate = re_candidate,
+          family_name = family_name
+        )
+      }
+    }
+  }
+}
+
+# =========================================================
+# TABLES
+# =========================================================
+fit_info_table <- bind_rows(fit_info_list) %>%
+  group_by(dataset, AOI, family) %>%
+  mutate(
+    best_AIC = min(AIC, na.rm = TRUE),
+    delta_AIC = AIC - best_AIC,
+    aic_group = case_when(
+      is.na(AIC) ~ "fit_fail",
+      delta_AIC == 0 ~ "winner",
+      delta_AIC <= tol_aic ~ "equal_best",
+      delta_AIC <= 6 ~ "some_support",
+      TRUE ~ "weak"
+    )
+  ) %>%
+  ungroup() %>%
+  arrange(dataset, AOI, family, delta_AIC, re_candidate)
+
+varcomp_table <- bind_rows(varcomp_list) %>%
+  arrange(dataset, AOI, family, re_candidate, group, term)
+
+correlation_table <- bind_rows(correlation_list) %>%
+  arrange(dataset, AOI, family, re_candidate, group, term1, term2)
+
+varcomp_summary <- varcomp_table %>%
+  group_by(dataset, AOI, family, re_candidate, group) %>%
+  summarise(
+    n_terms = n(),
+    min_variance = min(variance, na.rm = TRUE),
+    max_variance = max(variance, na.rm = TRUE),
+    mean_variance = mean(variance, na.rm = TRUE),
+    n_near_zero_var = sum(variance < 1e-6, na.rm = TRUE),
+    .groups = "drop"
+  ) %>%
+  arrange(dataset, AOI, family, re_candidate, group)
+
+correlation_flags <- correlation_table %>%
+  mutate(
+    abs_correlation = abs(correlation),
+    near_boundary_corr = abs_correlation > 0.95
+  ) %>%
+  arrange(desc(abs_correlation), dataset, AOI, family, re_candidate)
+
+re_decision_table <- fit_info_table %>%
+  left_join(
+    varcomp_summary %>%
+      group_by(dataset, AOI, family, re_candidate) %>%
+      summarise(
+        total_near_zero_var = sum(n_near_zero_var, na.rm = TRUE),
+        .groups = "drop"
+      ),
+    by = c("dataset", "AOI", "family", "re_candidate")
+  ) %>%
+  left_join(
+    correlation_flags %>%
+      group_by(dataset, AOI, family, re_candidate) %>%
+      summarise(
+        n_near_boundary_corr = sum(near_boundary_corr, na.rm = TRUE),
+        max_abs_correlation = max(abs_correlation, na.rm = TRUE),
+        .groups = "drop"
+      ),
+    by = c("dataset", "AOI", "family", "re_candidate")
+  ) %>%
+  mutate(
+    total_near_zero_var = dplyr::coalesce(total_near_zero_var, 0L),
+    n_near_boundary_corr = dplyr::coalesce(n_near_boundary_corr, 0L),
+    max_abs_correlation = dplyr::coalesce(max_abs_correlation, NA_real_)
+  ) %>%
+  arrange(dataset, AOI, family, delta_AIC, re_candidate)
+
+re_summary <- fit_info_table %>%
+  group_by(family, re_candidate) %>%
+  summarise(
+    n_cells = n(),
+    n_fit_fail = sum(fit_ok %in% FALSE, na.rm = TRUE),
+    n_warning = sum(has_warning %in% TRUE, na.rm = TRUE),
+    n_hessian = sum(warning_type == "hessian", na.rm = TRUE),
+    n_false_convergence = sum(warning_type == "false_convergence", na.rm = TRUE),
+    n_nan_eval = sum(warning_type == "nan_eval", na.rm = TRUE),
+    n_singular = sum(warning_type == "singular", na.rm = TRUE),
+    n_best_or_equal = sum(aic_group %in% c("winner", "equal_best"), na.rm = TRUE),
+    mean_delta_AIC = mean(delta_AIC, na.rm = TRUE),
+    median_delta_AIC = median(delta_AIC, na.rm = TRUE),
+    .groups = "drop"
+  ) %>%
+  arrange(family, n_fit_fail, n_warning, mean_delta_AIC)
+
+# =========================================================
+# OUTPUTS
+# =========================================================
+fit_info_table
+#varcomp_table
+#correlation_table
+#varcomp_summary
+#correlation_flags
+#re_decision_table
+re_summary
+```
+
+
+**SINGLE AOI NORMIERT**
+*Gamma*
+```{r}
+library(dplyr)
+library(tidyr)
+library(purrr)
+library(stringr)
+library(glmmTMB)
+library(tibble)
+
+# =========================================================
+# INPUT
+# =========================================================
+dfs <- list(
+  c_bed = c_bed,
+  c_ein = c_ein,
+  n_bed = n_bed,
+  n_ein = n_ein,
+  CS    = CS
+)
+
+datasets_with_speaker_interaction <- c("n_bed", "n_ein", "CS")
+re_candidates <- c("A", "B", "C")
+
+# =========================================================
+# HELPERS
+# =========================================================
+collapse_unique <- function(x) {
+  x <- unique(x[!is.na(x) & nzchar(x)])
+  if (length(x) == 0) NA_character_ else paste(x, collapse = " | ")
+}
+
+classify_warning_type <- function(warning_message, error_message = NA_character_) {
+  txt <- paste(c(error_message, warning_message), collapse = " | ")
+
+  dplyr::case_when(
+    is.na(txt) || !nzchar(txt) ~ "none",
+    str_detect(txt, regex("non-positive-definite Hessian|failed to invert Hessian|pdHess", ignore_case = TRUE)) ~ "hessian",
+    str_detect(txt, regex("false convergence", ignore_case = TRUE)) ~ "false_convergence",
+    str_detect(txt, regex("NA/NaN function evaluation", ignore_case = TRUE)) ~ "nan_eval",
+    str_detect(txt, regex("singular", ignore_case = TRUE)) ~ "singular",
+    TRUE ~ "other"
+  )
+}
+
+prep_dataset <- function(df, dataset_name) {
+  out <- df %>%
+    dplyr::filter(
+      !is.na(FRT.WD),
+      FRT.WD > 0,
+      !is.na(AOI),
+      !is.na(Participant),
+      !is.na(Topic),
+      !is.na(condition)
+    ) %>%
+    dplyr::mutate(
+      Participant = factor(Participant),
+      Topic = factor(Topic),
+      AOI = factor(AOI),
+      condition = factor(condition)
+    )
+
+  if (dataset_name %in% datasets_with_speaker_interaction) {
+    out <- out %>%
+      dplyr::filter(!is.na(speaker)) %>%
+      dplyr::mutate(speaker = factor(speaker))
+  }
+
+  as.data.frame(out, stringsAsFactors = FALSE)
+}
+
+get_fixed_formula_wd <- function(dataset_name) {
+  if (dataset_name %in% datasets_with_speaker_interaction) {
+    "condition * speaker"
+  } else {
+    "condition"
+  }
+}
+
+make_formula_re_wd <- function(dataset_name, re_candidate) {
+  fixed_part <- get_fixed_formula_wd(dataset_name)
+
+  re_part <- switch(
+    re_candidate,
+    A = "(1 | Participant) + (1 | Topic)",
+    B = "(1 + condition | Participant) + (1 + condition | Topic)",
+    C = "diag(condition + 1 | Participant) + diag(condition + 1 | Topic)",
+    stop("Unknown re_candidate: ", re_candidate)
+  )
+
+  as.formula(
+    paste0("FRT.WD ~ ", fixed_part, " + ", re_part)
+  )
+}
+
+fit_one_model <- function(dat, dataset_name, re_candidate) {
+  glmmTMB(
+    formula = make_formula_re_wd(dataset_name, re_candidate),
+    data = dat,
+    family = Gamma(link = "log")
+  )
+}
+
+# =========================================================
+# RANDOM-EFFECT EXTRACTION
+# =========================================================
+extract_varcomp_table <- function(fit, dataset_name, aoi_value, re_candidate) {
+  vc <- tryCatch(VarCorr(fit), error = function(e) NULL)
+  if (is.null(vc) || is.null(vc$cond)) return(tibble())
+
+  purrr::imap_dfr(vc$cond, function(mat, grp_name) {
+    mm <- as.matrix(mat)
+
+    if (nrow(mm) == 0) return(tibble())
+
+    vars <- diag(mm)
+    tibble(
+      dataset = dataset_name,
+      AOI = as.character(aoi_value),
+      re_candidate = re_candidate,
+      group = grp_name,
+      term = rownames(mm),
+      variance = as.numeric(vars)
+    )
+  })
+}
+
+extract_correlation_table <- function(fit, dataset_name, aoi_value, re_candidate) {
+  vc <- tryCatch(VarCorr(fit), error = function(e) NULL)
+  if (is.null(vc) || is.null(vc$cond)) return(tibble())
+
+  purrr::imap_dfr(vc$cond, function(mat, grp_name) {
+    mm <- as.matrix(mat)
+    if (nrow(mm) < 2) return(tibble())
+
+    cors <- cov2cor(mm)
+    idx <- which(upper.tri(cors), arr.ind = TRUE)
+    if (nrow(idx) == 0) return(tibble())
+
+    tibble(
+      dataset = dataset_name,
+      AOI = as.character(aoi_value),
+      re_candidate = re_candidate,
+      group = grp_name,
+      term1 = rownames(cors)[idx[, 1]],
+      term2 = colnames(cors)[idx[, 2]],
+      correlation = cors[idx]
+    )
+  })
+}
+
+extract_fit_info <- function(fit, dataset_name, aoi_value, re_candidate, warns, msgs) {
+  s <- tryCatch(summary(fit), error = function(e) NULL)
+
+  pd_hessian <- NA
+  convergence_code <- NA_real_
+
+  if (!is.null(s)) {
+    if (!is.null(s$sdr$pdHess)) pd_hessian <- isTRUE(s$sdr$pdHess)
+    if (!is.null(s$fit$convergence)) convergence_code <- s$fit$convergence
+  }
+
+  tibble(
+    dataset = dataset_name,
+    AOI = as.character(aoi_value),
+    re_candidate = re_candidate,
+    fit_ok = TRUE,
+    has_warning = !is.na(collapse_unique(warns)),
+    warning_message = collapse_unique(warns),
+    error_message = NA_character_,
+    other_message = collapse_unique(msgs),
+    warning_type = classify_warning_type(collapse_unique(warns), NA_character_),
+    pd_hessian = pd_hessian,
+    convergence_code = convergence_code,
+    AIC = tryCatch(AIC(fit), error = function(e) NA_real_),
+    BIC = tryCatch(BIC(fit), error = function(e) NA_real_),
+    logLik = tryCatch(as.numeric(logLik(fit)), error = function(e) NA_real_)
+  )
+}
+
+# =========================================================
+# FIT ALL MODELS
+# =========================================================
+fit_info_list <- list()
+varcomp_list <- list()
+correlation_list <- list()
+
+for (dataset_name in names(dfs)) {
+  dat <- prep_dataset(dfs[[dataset_name]], dataset_name)
+
+  for (aoi_value in levels(droplevels(dat$AOI))) {
+    dat_aoi <- dat %>% dplyr::filter(AOI == aoi_value)
+
+    for (re_candidate in re_candidates) {
+      warns <- character(0)
+      msgs <- character(0)
+
+      mod <- withCallingHandlers(
+        tryCatch(
+          fit_one_model(
+            dat = dat_aoi,
+            dataset_name = dataset_name,
+            re_candidate = re_candidate
+          ),
+          error = function(e) e
+        ),
+        warning = function(w) {
+          warns <<- c(warns, conditionMessage(w))
+          invokeRestart("muffleWarning")
+        },
+        message = function(m) {
+          msgs <<- c(msgs, conditionMessage(m))
+          invokeRestart("muffleMessage")
+        }
+      )
+
+      key <- paste(dataset_name, aoi_value, re_candidate, sep = "__")
+
+      if (inherits(mod, "error")) {
+        fit_info_list[[key]] <- tibble(
+          dataset = dataset_name,
+          AOI = as.character(aoi_value),
+          re_candidate = re_candidate,
+          fit_ok = FALSE,
+          has_warning = !is.na(collapse_unique(warns)),
+          warning_message = collapse_unique(warns),
+          error_message = conditionMessage(mod),
+          other_message = collapse_unique(msgs),
+          warning_type = classify_warning_type(collapse_unique(warns), conditionMessage(mod)),
+          pd_hessian = NA,
+          convergence_code = NA_real_,
+          AIC = NA_real_,
+          BIC = NA_real_,
+          logLik = NA_real_
+        )
+        next
+      }
+
+      fit_info_list[[key]] <- extract_fit_info(
+        fit = mod,
+        dataset_name = dataset_name,
+        aoi_value = aoi_value,
+        re_candidate = re_candidate,
+        warns = warns,
+        msgs = msgs
+      )
+
+      varcomp_list[[key]] <- extract_varcomp_table(
+        fit = mod,
+        dataset_name = dataset_name,
+        aoi_value = aoi_value,
+        re_candidate = re_candidate
+      )
+
+      correlation_list[[key]] <- extract_correlation_table(
+        fit = mod,
+        dataset_name = dataset_name,
+        aoi_value = aoi_value,
+        re_candidate = re_candidate
+      )
+    }
+  }
+}
+
+# =========================================================
+# TABLES
+# =========================================================
+fit_info_table_wd <- bind_rows(fit_info_list) %>%
+  group_by(dataset, AOI) %>%
+  mutate(
+    best_AIC = min(AIC, na.rm = TRUE),
+    delta_AIC = AIC - best_AIC,
+    aic_group = case_when(
+      is.na(AIC) ~ "fit_fail",
+      delta_AIC == 0 ~ "winner",
+      delta_AIC <= 2 ~ "equal_best",
+      delta_AIC <= 6 ~ "some_support",
+      TRUE ~ "weak"
+    )
+  ) %>%
+  ungroup() %>%
+  arrange(dataset, AOI, delta_AIC, re_candidate)
+
+varcomp_table_wd <- bind_rows(varcomp_list) %>%
+  arrange(dataset, AOI, re_candidate, group, term)
+
+correlation_table_wd <- bind_rows(correlation_list) %>%
+  arrange(dataset, AOI, re_candidate, group, term1, term2)
+
+varcomp_summary_wd <- varcomp_table_wd %>%
+  group_by(dataset, AOI, re_candidate, group) %>%
+  summarise(
+    n_terms = n(),
+    min_variance = min(variance, na.rm = TRUE),
+    max_variance = max(variance, na.rm = TRUE),
+    mean_variance = mean(variance, na.rm = TRUE),
+    n_near_zero_var = sum(variance < 1e-6, na.rm = TRUE),
+    .groups = "drop"
+  ) %>%
+  arrange(dataset, AOI, re_candidate, group)
+
+correlation_flags_wd <- correlation_table_wd %>%
+  mutate(
+    abs_correlation = abs(correlation),
+    near_boundary_corr = abs_correlation > 0.95
+  ) %>%
+  arrange(desc(abs_correlation), dataset, AOI, re_candidate)
+
+re_decision_table_wd <- fit_info_table_wd %>%
+  left_join(
+    varcomp_summary_wd %>%
+      group_by(dataset, AOI, re_candidate) %>%
+      summarise(
+        total_near_zero_var = sum(n_near_zero_var, na.rm = TRUE),
+        .groups = "drop"
+      ),
+    by = c("dataset", "AOI", "re_candidate")
+  ) %>%
+  left_join(
+    correlation_flags_wd %>%
+      group_by(dataset, AOI, re_candidate) %>%
+      summarise(
+        n_near_boundary_corr = sum(near_boundary_corr, na.rm = TRUE),
+        max_abs_correlation = max(abs_correlation, na.rm = TRUE),
+        .groups = "drop"
+      ),
+    by = c("dataset", "AOI", "re_candidate")
+  ) %>%
+  mutate(
+    total_near_zero_var = dplyr::coalesce(total_near_zero_var, 0L),
+    n_near_boundary_corr = dplyr::coalesce(n_near_boundary_corr, 0L),
+    max_abs_correlation = dplyr::coalesce(max_abs_correlation, NA_real_)
+  ) %>%
+  arrange(dataset, AOI, delta_AIC, re_candidate)
+
+re_summary_wd <- fit_info_table_wd %>%
+  group_by(re_candidate) %>%
+  summarise(
+    n_cells = n(),
+    n_fit_fail = sum(fit_ok %in% FALSE, na.rm = TRUE),
+    n_warning = sum(has_warning %in% TRUE, na.rm = TRUE),
+    n_hessian = sum(warning_type == "hessian", na.rm = TRUE),
+    n_false_convergence = sum(warning_type == "false_convergence", na.rm = TRUE),
+    n_nan_eval = sum(warning_type == "nan_eval", na.rm = TRUE),
+    n_best_or_equal = sum(aic_group %in% c("winner", "equal_best"), na.rm = TRUE),
+    mean_delta_AIC = mean(delta_AIC, na.rm = TRUE),
+    median_delta_AIC = median(delta_AIC, na.rm = TRUE),
+    .groups = "drop"
+  ) %>%
+  arrange(n_fit_fail, n_warning, mean_delta_AIC)
+
+# =========================================================
+# OUTPUTS
+# =========================================================
+fit_info_table_wd
+#varcomp_table_wd
+#correlation_table_wd
+#varcomp_summary_wd
+#correlation_flags_wd
+#re_decision_table_wd
+re_summary_wd
+```
+*NegBin und Normal*
+```{r}
+library(dplyr)
+library(tidyr)
+library(purrr)
+library(stringr)
+library(glmmTMB)
+library(lme4)
+library(tibble)
+
+# =========================================================
+# INPUT
+# =========================================================
+dfs <- list(
+  c_bed = c_bed,
+  c_ein = c_ein,
+  n_bed = n_bed,
+  n_ein = n_ein,
+  CS    = CS
+)
+
+datasets_with_speaker_interaction <- c("n_bed", "n_ein", "CS")
+re_candidates <- c("A", "B", "C")
+families_to_compare <- c("normal", "negbinomial")
+tol_aic <- 2
+
+# =========================================================
+# HELPERS
+# =========================================================
+collapse_unique <- function(x) {
+  x <- unique(x[!is.na(x) & nzchar(x)])
+  if (length(x) == 0) NA_character_ else paste(x, collapse = " | ")
+}
+
+classify_warning_type <- function(warning_message, error_message = NA_character_) {
+  txt <- paste(c(error_message, warning_message), collapse = " | ")
+
+  dplyr::case_when(
+    is.na(txt) || !nzchar(txt) ~ "none",
+    str_detect(txt, regex("non-positive-definite Hessian|failed to invert Hessian|pdHess", ignore_case = TRUE)) ~ "hessian",
+    str_detect(txt, regex("false convergence", ignore_case = TRUE)) ~ "false_convergence",
+    str_detect(txt, regex("NA/NaN function evaluation", ignore_case = TRUE)) ~ "nan_eval",
+    str_detect(txt, regex("singular", ignore_case = TRUE)) ~ "singular",
+    TRUE ~ "other"
+  )
+}
+
+prep_dataset <- function(df, dataset_name) {
+  out <- df %>%
+    dplyr::filter(
+      !is.na(FRT.WD),
+      FRT.WD > 0,
+      !is.na(AOI),
+      !is.na(Participant),
+      !is.na(Topic),
+      !is.na(condition)
+    ) %>%
+    dplyr::mutate(
+      Participant = factor(Participant),
+      Topic = factor(Topic),
+      AOI = factor(AOI),
+      condition = factor(condition)
+    )
+
+  if (dataset_name %in% datasets_with_speaker_interaction) {
+    out <- out %>%
+      dplyr::filter(!is.na(speaker)) %>%
+      dplyr::mutate(speaker = factor(speaker))
+  }
+
+  as.data.frame(out, stringsAsFactors = FALSE)
+}
+
+get_fixed_formula_wd <- function(dataset_name) {
+  if (dataset_name %in% datasets_with_speaker_interaction) {
+    "condition * speaker"
+  } else {
+    "condition"
+  }
+}
+
+make_formula_re_wd <- function(dataset_name, re_candidate, family_name) {
+  fixed_part <- get_fixed_formula_wd(dataset_name)
+
+  re_part <- switch(
+    re_candidate,
+    A = "(1 | Participant) + (1 | Topic)",
+    B = "(1 + condition | Participant) + (1 + condition | Topic)",
+    C = if (family_name == "normal") {
+      "(1 + condition || Participant) + (1 + condition || Topic)"
+    } else {
+      "diag(condition + 1 | Participant) + diag(condition + 1 | Topic)"
+    },
+    stop("Unknown re_candidate: ", re_candidate)
+  )
+
+  as.formula(
+    paste0("FRT.WD ~ ", fixed_part, " + ", re_part)
+  )
+}
+
+fit_one_model <- function(dat, dataset_name, re_candidate, family_name) {
+  form <- make_formula_re_wd(dataset_name, re_candidate, family_name)
+
+  if (family_name == "normal") {
+    return(
+      lme4::lmer(
+        formula = form,
+        data = dat,
+        REML = FALSE,
+        control = lme4::lmerControl(
+          check.rankX = "message+drop.cols",
+          check.conv.singular = "message",
+          check.conv.hess = "warning",
+          check.conv.grad = "warning"
+        )
+      )
+    )
+  }
+
+  if (family_name == "negbinomial") {
+    return(
+      glmmTMB(
+        formula = form,
+        data = dat,
+        family = nbinom2(link = "log")
+      )
+    )
+  }
+
+  stop("Unknown family: ", family_name)
+}
+
+# =========================================================
+# RANDOM-EFFECT EXTRACTION
+# =========================================================
+extract_varcomp_table <- function(fit, dataset_name, aoi_value, re_candidate, family_name) {
+
+  if (inherits(fit, "glmmTMB")) {
+    vc <- tryCatch(VarCorr(fit), error = function(e) NULL)
+    if (is.null(vc) || is.null(vc$cond)) return(tibble())
+
+    return(
+      purrr::imap_dfr(vc$cond, function(mat, grp_name) {
+        mm <- as.matrix(mat)
+        if (nrow(mm) == 0) return(tibble())
+
+        vars <- diag(mm)
+        tibble(
+          dataset = dataset_name,
+          AOI = as.character(aoi_value),
+          family = family_name,
+          re_candidate = re_candidate,
+          group = grp_name,
+          term = rownames(mm),
+          variance = as.numeric(vars)
+        )
+      })
+    )
+  }
+
+  if (inherits(fit, "lmerMod")) {
+    vc <- tryCatch(VarCorr(fit), error = function(e) NULL)
+    if (is.null(vc)) return(tibble())
+
+    vc_df <- as.data.frame(vc)
+
+    return(
+      vc_df %>%
+        dplyr::filter(is.na(var2)) %>%
+        dplyr::transmute(
+          dataset = dataset_name,
+          AOI = as.character(aoi_value),
+          family = family_name,
+          re_candidate = re_candidate,
+          group = grp,
+          term = var1,
+          variance = vcov
+        )
+    )
+  }
+
+  tibble()
+}
+
+extract_correlation_table <- function(fit, dataset_name, aoi_value, re_candidate, family_name) {
+
+  if (inherits(fit, "glmmTMB")) {
+    vc <- tryCatch(VarCorr(fit), error = function(e) NULL)
+    if (is.null(vc) || is.null(vc$cond)) return(tibble())
+
+    return(
+      purrr::imap_dfr(vc$cond, function(mat, grp_name) {
+        mm <- as.matrix(mat)
+        if (nrow(mm) < 2) return(tibble())
+
+        cors <- cov2cor(mm)
+        idx <- which(upper.tri(cors), arr.ind = TRUE)
+        if (nrow(idx) == 0) return(tibble())
+
+        tibble(
+          dataset = dataset_name,
+          AOI = as.character(aoi_value),
+          family = family_name,
+          re_candidate = re_candidate,
+          group = grp_name,
+          term1 = rownames(cors)[idx[, 1]],
+          term2 = colnames(cors)[idx[, 2]],
+          correlation = cors[idx]
+        )
+      })
+    )
+  }
+
+  if (inherits(fit, "lmerMod")) {
+    vc <- tryCatch(VarCorr(fit), error = function(e) NULL)
+    if (is.null(vc)) return(tibble())
+
+    vc_df <- as.data.frame(vc)
+
+    return(
+      vc_df %>%
+        dplyr::filter(!is.na(var2), var1 != "sdcor", var2 != "sdcor") %>%
+        dplyr::transmute(
+          dataset = dataset_name,
+          AOI = as.character(aoi_value),
+          family = family_name,
+          re_candidate = re_candidate,
+          group = grp,
+          term1 = var1,
+          term2 = var2,
+          correlation = sdcor
+        )
+    )
+  }
+
+  tibble()
+}
+
+extract_fit_info <- function(fit, dataset_name, aoi_value, re_candidate, family_name, warns, msgs) {
+
+  if (inherits(fit, "glmmTMB")) {
+    s <- tryCatch(summary(fit), error = function(e) NULL)
+
+    pd_hessian <- NA
+    convergence_code <- NA_real_
+
+    if (!is.null(s)) {
+      if (!is.null(s$sdr$pdHess)) pd_hessian <- isTRUE(s$sdr$pdHess)
+      if (!is.null(s$fit$convergence)) convergence_code <- s$fit$convergence
+    }
+
+    return(
+      tibble(
+        dataset = dataset_name,
+        AOI = as.character(aoi_value),
+        family = family_name,
+        re_candidate = re_candidate,
+        fit_ok = TRUE,
+        has_warning = !is.na(collapse_unique(warns)),
+        warning_message = collapse_unique(warns),
+        error_message = NA_character_,
+        other_message = collapse_unique(msgs),
+        warning_type = classify_warning_type(collapse_unique(warns), NA_character_),
+        pd_hessian = pd_hessian,
+        convergence_code = convergence_code,
+        singular_fit = NA,
+        AIC = tryCatch(AIC(fit), error = function(e) NA_real_),
+        BIC = tryCatch(BIC(fit), error = function(e) NA_real_),
+        logLik = tryCatch(as.numeric(logLik(fit)), error = function(e) NA_real_)
+      )
+    )
+  }
+
+  if (inherits(fit, "lmerMod")) {
+    singular_fit <- tryCatch(lme4::isSingular(fit, tol = 1e-5), error = function(e) NA)
+
+    return(
+      tibble(
+        dataset = dataset_name,
+        AOI = as.character(aoi_value),
+        family = family_name,
+        re_candidate = re_candidate,
+        fit_ok = TRUE,
+        has_warning = !is.na(collapse_unique(warns)),
+        warning_message = collapse_unique(warns),
+        error_message = NA_character_,
+        other_message = collapse_unique(msgs),
+        warning_type = classify_warning_type(collapse_unique(warns), NA_character_),
+        pd_hessian = NA,
+        convergence_code = NA_real_,
+        singular_fit = singular_fit,
+        AIC = tryCatch(AIC(fit), error = function(e) NA_real_),
+        BIC = tryCatch(BIC(fit), error = function(e) NA_real_),
+        logLik = tryCatch(as.numeric(logLik(fit)), error = function(e) NA_real_)
+      )
+    )
+  }
+
+  tibble()
+}
+
+# =========================================================
+# FIT ALL MODELS
+# =========================================================
+fit_info_list <- list()
+varcomp_list <- list()
+correlation_list <- list()
+
+for (dataset_name in names(dfs)) {
+  dat <- prep_dataset(dfs[[dataset_name]], dataset_name)
+
+  for (aoi_value in levels(droplevels(dat$AOI))) {
+    dat_aoi <- dat %>% dplyr::filter(AOI == aoi_value)
+
+    for (family_name in families_to_compare) {
+      for (re_candidate in re_candidates) {
+
+        warns <- character(0)
+        msgs <- character(0)
+
+        mod <- withCallingHandlers(
+          tryCatch(
+            fit_one_model(
+              dat = dat_aoi,
+              dataset_name = dataset_name,
+              re_candidate = re_candidate,
+              family_name = family_name
+            ),
+            error = function(e) e
+          ),
+          warning = function(w) {
+            warns <<- c(warns, conditionMessage(w))
+            invokeRestart("muffleWarning")
+          },
+          message = function(m) {
+            msgs <<- c(msgs, conditionMessage(m))
+            invokeRestart("muffleMessage")
+          }
+        )
+
+        key <- paste(dataset_name, aoi_value, family_name, re_candidate, sep = "__")
+
+        if (inherits(mod, "error")) {
+          fit_info_list[[key]] <- tibble(
+            dataset = dataset_name,
+            AOI = as.character(aoi_value),
+            family = family_name,
+            re_candidate = re_candidate,
+            fit_ok = FALSE,
+            has_warning = !is.na(collapse_unique(warns)),
+            warning_message = collapse_unique(warns),
+            error_message = conditionMessage(mod),
+            other_message = collapse_unique(msgs),
+            warning_type = classify_warning_type(collapse_unique(warns), conditionMessage(mod)),
+            pd_hessian = NA,
+            convergence_code = NA_real_,
+            singular_fit = NA,
+            AIC = NA_real_,
+            BIC = NA_real_,
+            logLik = NA_real_
+          )
+          next
+        }
+
+        fit_info_list[[key]] <- extract_fit_info(
+          fit = mod,
+          dataset_name = dataset_name,
+          aoi_value = aoi_value,
+          re_candidate = re_candidate,
+          family_name = family_name,
+          warns = warns,
+          msgs = msgs
+        )
+
+        varcomp_list[[key]] <- extract_varcomp_table(
+          fit = mod,
+          dataset_name = dataset_name,
+          aoi_value = aoi_value,
+          re_candidate = re_candidate,
+          family_name = family_name
+        )
+
+        correlation_list[[key]] <- extract_correlation_table(
+          fit = mod,
+          dataset_name = dataset_name,
+          aoi_value = aoi_value,
+          re_candidate = re_candidate,
+          family_name = family_name
+        )
+      }
+    }
+  }
+}
+
+# =========================================================
+# TABLES
+# =========================================================
+fit_info_table_wd <- bind_rows(fit_info_list) %>%
+  group_by(dataset, AOI, family) %>%
+  mutate(
+    best_AIC = min(AIC, na.rm = TRUE),
+    delta_AIC = AIC - best_AIC,
+    aic_group = case_when(
+      is.na(AIC) ~ "fit_fail",
+      delta_AIC == 0 ~ "winner",
+      delta_AIC <= tol_aic ~ "equal_best",
+      delta_AIC <= 6 ~ "some_support",
+      TRUE ~ "weak"
+    )
+  ) %>%
+  ungroup() %>%
+  arrange(dataset, AOI, family, delta_AIC, re_candidate)
+
+varcomp_table_wd <- bind_rows(varcomp_list) %>%
+  arrange(dataset, AOI, family, re_candidate, group, term)
+
+correlation_table_wd <- bind_rows(correlation_list) %>%
+  arrange(dataset, AOI, family, re_candidate, group, term1, term2)
+
+varcomp_summary_wd <- varcomp_table_wd %>%
+  group_by(dataset, AOI, family, re_candidate, group) %>%
+  summarise(
+    n_terms = n(),
+    min_variance = min(variance, na.rm = TRUE),
+    max_variance = max(variance, na.rm = TRUE),
+    mean_variance = mean(variance, na.rm = TRUE),
+    n_near_zero_var = sum(variance < 1e-6, na.rm = TRUE),
+    .groups = "drop"
+  ) %>%
+  arrange(dataset, AOI, family, re_candidate, group)
+
+correlation_flags_wd <- correlation_table_wd %>%
+  mutate(
+    abs_correlation = abs(correlation),
+    near_boundary_corr = abs_correlation > 0.95
+  ) %>%
+  arrange(desc(abs_correlation), dataset, AOI, family, re_candidate)
+
+re_decision_table_wd <- fit_info_table_wd %>%
+  left_join(
+    varcomp_summary_wd %>%
+      group_by(dataset, AOI, family, re_candidate) %>%
+      summarise(
+        total_near_zero_var = sum(n_near_zero_var, na.rm = TRUE),
+        .groups = "drop"
+      ),
+    by = c("dataset", "AOI", "family", "re_candidate")
+  ) %>%
+  left_join(
+    correlation_flags_wd %>%
+      group_by(dataset, AOI, family, re_candidate) %>%
+      summarise(
+        n_near_boundary_corr = sum(near_boundary_corr, na.rm = TRUE),
+        max_abs_correlation = max(abs_correlation, na.rm = TRUE),
+        .groups = "drop"
+      ),
+    by = c("dataset", "AOI", "family", "re_candidate")
+  ) %>%
+  mutate(
+    total_near_zero_var = dplyr::coalesce(total_near_zero_var, 0L),
+    n_near_boundary_corr = dplyr::coalesce(n_near_boundary_corr, 0L),
+    max_abs_correlation = dplyr::coalesce(max_abs_correlation, NA_real_)
+  ) %>%
+  arrange(dataset, AOI, family, delta_AIC, re_candidate)
+
+re_summary_wd <- fit_info_table_wd %>%
+  group_by(family, re_candidate) %>%
+  summarise(
+    n_cells = n(),
+    n_fit_fail = sum(fit_ok %in% FALSE, na.rm = TRUE),
+    n_warning = sum(has_warning %in% TRUE, na.rm = TRUE),
+    n_hessian = sum(warning_type == "hessian", na.rm = TRUE),
+    n_false_convergence = sum(warning_type == "false_convergence", na.rm = TRUE),
+    n_nan_eval = sum(warning_type == "nan_eval", na.rm = TRUE),
+    n_singular = sum(warning_type == "singular", na.rm = TRUE),
+    n_best_or_equal = sum(aic_group %in% c("winner", "equal_best"), na.rm = TRUE),
+    mean_delta_AIC = mean(delta_AIC, na.rm = TRUE),
+    median_delta_AIC = median(delta_AIC, na.rm = TRUE),
+    .groups = "drop"
+  ) %>%
+  arrange(family, n_fit_fail, n_warning, mean_delta_AIC)
+
+# =========================================================
+# OUTPUTS
+# =========================================================
+fit_info_table_wd
+#varcomp_table_wd
+#correlation_table_wd
+#varcomp_summary_wd
+#correlation_flags_wd
+#re_decision_table_wd
+re_summary_wd
+```
+

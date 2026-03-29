@@ -1,0 +1,808 @@
+---
+title: "Amgiuity"
+output: html_document
+---
+
+
+```{r}
+library(here)
+```
+
+```{r}
+ambiguity <- readRDS(here("ValidationData", "ambiguity.rds"))
+```
+
+Unsere Modelle die wir in diesem Experiment Testen:
+
+TRT: mod_trt <- glmmTMB( TRT ~ ambiguity*AOI + reference*AOI + subject*AOI + nLetters + (1 | Topic) + (1 | Participant), data = ambiguity, family = Gamma(link = "log") )
+
+FRT: mod_frt <- glmmTMB( FRT ~ ambiguity*AOI + reference*AOI + subject*AOI + nLetters + (1 | Topic) + (1 | Participant), data = ambiguity, family = Gamma(link = "log") )
+
+RRT: mod_rrt <- glmmTMB( RRT ~ ambiguity*AOI + reference*AOI + subject*AOI + nLetters + (1 | Topic) + (1 | Participant), ziformula = ~ AOI * condition + nLetters, data = ambiguity, family = ziGamma(link = "log") )
+
+Wir bauen wieder jeweils ein Modell pro aggr_level
+
+
+*check ob jeder faktor und jede AOI als kombination existieren*
+```{r}
+library(dplyr)
+library(tidyr)
+
+ambiguity <- ambiguity %>%
+  mutate(
+    AOI = droplevels(as.factor(AOI)),
+    ambiguity = droplevels(as.factor(ambiguity)),
+    reference = droplevels(as.factor(reference)),
+    subject = droplevels(as.factor(subject))
+  )
+
+# AOI x ambiguity
+check_aoi_ambiguity <- ambiguity %>%
+  count(AOI, ambiguity, name = "n") %>%
+  complete(AOI, ambiguity, fill = list(n = 0)) %>%
+  arrange(AOI, ambiguity)
+
+missing_aoi_ambiguity <- check_aoi_ambiguity %>%
+  filter(n == 0)
+
+# AOI x reference
+check_aoi_reference <- ambiguity %>%
+  count(AOI, reference, name = "n") %>%
+  complete(AOI, reference, fill = list(n = 0)) %>%
+  arrange(AOI, reference)
+
+missing_aoi_reference <- check_aoi_reference %>%
+  filter(n == 0)
+
+# AOI x subject
+check_aoi_subject <- ambiguity %>%
+  count(AOI, subject, name = "n") %>%
+  complete(AOI, subject, fill = list(n = 0)) %>%
+  arrange(AOI, subject)
+
+missing_aoi_subject <- check_aoi_subject %>%
+  filter(n == 0)
+
+check_aoi_ambiguity
+check_aoi_reference
+check_aoi_subject
+
+missing_aoi_ambiguity
+missing_aoi_reference
+missing_aoi_subject
+```
+
+*TRT: Fit-Probleme full Data*
+```{r}
+library(dplyr)
+library(tidyr)
+library(purrr)
+library(tibble)
+library(stringr)
+library(glmmTMB)
+library(lme4)
+
+# =========================================================
+# HILFSFUNKTIONEN
+# =========================================================
+
+safe_plain_df <- function(df) {
+  out <- as.data.frame(df, stringsAsFactors = FALSE)
+  rownames(out) <- NULL
+  out
+}
+
+round_df_4 <- function(df) {
+  df %>%
+    mutate(across(where(is.numeric), ~ round(.x, 4)))
+}
+
+collapse_unique <- function(x) {
+  x <- unique(stats::na.omit(x))
+  if (length(x) == 0) return(NA_character_)
+  paste(x, collapse = " | ")
+}
+
+calc_fit_metrics <- function(obs, pred) {
+  keep <- is.finite(obs) & is.finite(pred)
+  obs  <- obs[keep]
+  pred <- pred[keep]
+
+  if (length(obs) == 0) {
+    return(tibble(
+      n_obs_metric = 0L,
+      rmse_in_sample = NA_real_,
+      mae_in_sample = NA_real_,
+      bias_in_sample = NA_real_,
+      cor_obs_pred = NA_real_
+    ))
+  }
+
+  err <- pred - obs
+
+  tibble(
+    n_obs_metric = length(obs),
+    rmse_in_sample = sqrt(mean(err^2)),
+    mae_in_sample = mean(abs(err)),
+    bias_in_sample = mean(err),
+    cor_obs_pred = suppressWarnings(stats::cor(obs, pred))
+  )
+}
+
+# =========================================================
+# DATEN
+# Erwartet:
+# TRT, nLetters, Participant, Topic, AOI, aggr_level,
+# ambiguity, reference, subject
+# =========================================================
+
+prep_ambiguity_fullfit_data <- function(df) {
+  needed <- c(
+    "TRT", "nLetters", "Participant", "Topic", "AOI", "aggr_level",
+    "ambiguity", "reference", "subject"
+  )
+
+  missing_cols <- setdiff(needed, names(df))
+  if (length(missing_cols) > 0) {
+    stop("Fehlende Variablen: ", paste(missing_cols, collapse = ", "))
+  }
+
+  out <- df %>%
+    filter(!is.na(TRT), TRT > 0) %>%
+    filter(!is.na(nLetters)) %>%
+    filter(!is.na(Participant), !is.na(Topic), !is.na(AOI), !is.na(aggr_level)) %>%
+    filter(!is.na(ambiguity), !is.na(reference), !is.na(subject)) %>%
+    mutate(
+      Participant = factor(Participant),
+      Topic = factor(Topic),
+      AOI = factor(AOI),
+      aggr_level = factor(aggr_level),
+      ambiguity = factor(ambiguity),
+      reference = factor(reference),
+      subject = factor(subject)
+    )
+
+  cluster_sizes <- out %>%
+    distinct(aggr_level, AOI) %>%
+    count(aggr_level, name = "n_aoi_in_cluster")
+
+  list(
+    data = safe_plain_df(out),
+    cluster_sizes = cluster_sizes
+  )
+}
+
+# =========================================================
+# FORMELN PRO aggr_level
+# =========================================================
+
+make_formula_cluster_ambiguity <- function(response = "TRT",
+                                           n_aoi_in_cluster = 1L) {
+  rhs <- if (n_aoi_in_cluster > 1) {
+    "ambiguity * AOI + reference * AOI + subject * AOI + nLetters + (1 | Topic) + (1 | Participant)"
+  } else {
+    "ambiguity + reference + subject + nLetters + (1 | Topic) + (1 | Participant)"
+  }
+
+  as.formula(paste(response, "~", rhs))
+}
+
+# =========================================================
+# DESIGN-CHECKS
+# =========================================================
+
+check_cells <- function(df, var, aoi = "AOI") {
+  aoi_levels <- levels(df[[aoi]])
+  var_levels <- levels(df[[var]])
+
+  obs <- df %>%
+    dplyr::count(.data[[aoi]], .data[[var]], name = "n")
+
+  full_grid <- tidyr::expand_grid(
+    AOI__tmp = aoi_levels,
+    VAR__tmp = var_levels
+  ) %>%
+    rename(!!aoi := AOI__tmp, !!var := VAR__tmp)
+
+  full_grid %>%
+    left_join(obs, by = c(aoi, var)) %>%
+    mutate(
+      n = tidyr::replace_na(n, 0L),
+      present = n > 0
+    ) %>%
+    arrange(.data[[aoi]], .data[[var]])
+}
+
+summarise_cell_check <- function(cell_tbl, var_name) {
+  tibble(
+    factor_name = var_name,
+    n_cells_total = nrow(cell_tbl),
+    n_cells_present = sum(cell_tbl$present),
+    n_cells_missing = sum(!cell_tbl$present),
+    missing_cells = if (sum(!cell_tbl$present) == 0) {
+      NA_character_
+    } else {
+      paste0(
+        cell_tbl %>%
+          dplyr::filter(!present) %>%
+          transmute(txt = paste0(AOI, " x ", .data[[var_name]])) %>%
+          pull(txt),
+        collapse = "; "
+      )
+    }
+  )
+}
+
+within_aoi_variation <- function(df, var, aoi = "AOI") {
+  df %>%
+    group_by(.data[[aoi]]) %>%
+    summarise(
+      n_levels = n_distinct(.data[[var]]),
+      .groups = "drop"
+    ) %>%
+    mutate(
+      factor_name = var,
+      has_variation = n_levels >= 2
+    ) %>%
+    rename(AOI = .data[[aoi]])
+}
+
+summarise_within_aoi_variation <- function(var_tbl, var_name) {
+  tibble(
+    factor_name = var_name,
+    n_aoi_total = nrow(var_tbl),
+    n_aoi_without_variation = sum(!var_tbl$has_variation),
+    aoi_without_variation = if (sum(!var_tbl$has_variation) == 0) {
+      NA_character_
+    } else {
+      paste(var_tbl$AOI[!var_tbl$has_variation], collapse = "; ")
+    }
+  )
+}
+
+inspect_design_structure_ambiguity <- function(df) {
+  cell_ambiguity <- check_cells(df, "ambiguity")
+  cell_reference <- check_cells(df, "reference")
+  cell_subject   <- check_cells(df, "subject")
+
+  cell_summary <- bind_rows(
+    summarise_cell_check(cell_ambiguity, "ambiguity"),
+    summarise_cell_check(cell_reference, "reference"),
+    summarise_cell_check(cell_subject, "subject")
+  )
+
+  var_ambiguity <- within_aoi_variation(df, "ambiguity")
+  var_reference <- within_aoi_variation(df, "reference")
+  var_subject   <- within_aoi_variation(df, "subject")
+
+  variation_summary <- bind_rows(
+    summarise_within_aoi_variation(var_ambiguity, "ambiguity"),
+    summarise_within_aoi_variation(var_reference, "reference"),
+    summarise_within_aoi_variation(var_subject, "subject")
+  )
+
+  missing_cells_any <- any(cell_summary$n_cells_missing > 0)
+  no_variation_any  <- any(variation_summary$n_aoi_without_variation > 0)
+
+  tibble(
+    design_missing_cells_any = missing_cells_any,
+    design_no_variation_any = no_variation_any,
+    design_missing_ambiguity_cells = cell_summary$missing_cells[cell_summary$factor_name == "ambiguity"],
+    design_missing_reference_cells = cell_summary$missing_cells[cell_summary$factor_name == "reference"],
+    design_missing_subject_cells = cell_summary$missing_cells[cell_summary$factor_name == "subject"],
+    design_aoi_without_ambiguity_variation = variation_summary$aoi_without_variation[variation_summary$factor_name == "ambiguity"],
+    design_aoi_without_reference_variation = variation_summary$aoi_without_variation[variation_summary$factor_name == "reference"],
+    design_aoi_without_subject_variation = variation_summary$aoi_without_variation[variation_summary$factor_name == "subject"]
+  )
+}
+
+# =========================================================
+# DESIGNMATRIX-CHECK
+# =========================================================
+
+inspect_design_matrix_identifiability_ambiguity <- function(df, formula) {
+  fixed_formula <- lme4::nobars(formula)
+  mf_fixed <- model.frame(fixed_formula, data = droplevels(df), na.action = na.omit)
+  X <- model.matrix(fixed_formula, data = mf_fixed)
+
+  qrX <- qr(X)
+  rankX <- qrX$rank
+  pX <- ncol(X)
+  rankdef <- rankX < pX
+
+  redundant_cols <- if (rankdef) {
+    pivot <- qrX$pivot
+    redundant_idx <- pivot[seq.int(rankX + 1, pX)]
+    colnames(X)[redundant_idx]
+  } else {
+    character(0)
+  }
+
+  tibble(
+    X_rank = rankX,
+    X_ncol = pX,
+    fit_rank_deficient = rankdef,
+    redundant_cols = collapse_unique(redundant_cols),
+    n_distinct_AOI = dplyr::n_distinct(df$AOI),
+    n_distinct_ambiguity = dplyr::n_distinct(df$ambiguity),
+    n_distinct_reference = dplyr::n_distinct(df$reference),
+    n_distinct_subject = dplyr::n_distinct(df$subject),
+    n_distinct_nLetters = dplyr::n_distinct(df$nLetters),
+    min_nLetters = min(df$nLetters),
+    max_nLetters = max(df$nLetters)
+  )
+}
+
+# =========================================================
+# GLMMTMB FIT MIT STATUS-CHECK
+# =========================================================
+
+fit_glmmtmb_capture_ambiguity <- function(df, formula) {
+  warn_texts <- character()
+  msg_texts  <- character()
+
+  fit <- withCallingHandlers(
+    tryCatch(
+      glmmTMB::glmmTMB(
+        formula = formula,
+        data = droplevels(df),
+        family = Gamma(link = "log")
+      ),
+      error = function(e) e
+    ),
+    warning = function(w) {
+      warn_texts <<- c(warn_texts, conditionMessage(w))
+      invokeRestart("muffleWarning")
+    },
+    message = function(m) {
+      msg_texts <<- c(msg_texts, conditionMessage(m))
+      invokeRestart("muffleMessage")
+    }
+  )
+
+  if (inherits(fit, "error")) {
+    return(list(
+      fit_tbl = tibble(
+        fit_ok = FALSE,
+        fit_error = conditionMessage(fit),
+        fit_warning_text = collapse_unique(warn_texts),
+        fit_message_text = collapse_unique(msg_texts),
+        n_warning_messages = length(unique(stats::na.omit(warn_texts))),
+        n_messages = length(unique(stats::na.omit(msg_texts))),
+        fit_nonposdef_hessian = NA,
+        fit_nonzero_convergence = NA,
+        aic = NA_real_,
+        bic = NA_real_,
+        logLik = NA_real_
+      ),
+      fit_obj = NULL
+    ))
+  }
+
+  fit_nonposdef_hessian <- tryCatch(
+    !isTRUE(fit$sdr$pdHess),
+    error = function(e) NA
+  )
+
+  fit_nonzero_convergence <- tryCatch(
+    {
+      conv <- fit$fit$convergence
+      if (is.null(conv)) NA else conv != 0
+    },
+    error = function(e) NA
+  )
+
+  list(
+    fit_tbl = tibble(
+      fit_ok = TRUE,
+      fit_error = NA_character_,
+      fit_warning_text = collapse_unique(warn_texts),
+      fit_message_text = collapse_unique(msg_texts),
+      n_warning_messages = length(unique(stats::na.omit(warn_texts))),
+      n_messages = length(unique(stats::na.omit(msg_texts))),
+      fit_nonposdef_hessian = fit_nonposdef_hessian,
+      fit_nonzero_convergence = fit_nonzero_convergence,
+      aic = tryCatch(as.numeric(AIC(fit)), error = function(e) NA_real_),
+      bic = tryCatch(as.numeric(BIC(fit)), error = function(e) NA_real_),
+      logLik = tryCatch(as.numeric(logLik(fit)), error = function(e) NA_real_)
+    ),
+    fit_obj = fit
+  )
+}
+
+# =========================================================
+# KLASSIFIKATION PROBLEMART
+# =========================================================
+
+classify_problem_ambiguity <- function(fit_rank_deficient,
+                                       fit_warning_text,
+                                       fit_message_text,
+                                       fit_error,
+                                       fit_nonposdef_hessian,
+                                       fit_nonzero_convergence,
+                                       design_missing_cells_any,
+                                       design_no_variation_any) {
+  txt <- paste(
+    c(fit_warning_text, fit_message_text, fit_error),
+    collapse = " | "
+  )
+
+  case_when(
+    !is.na(fit_error) ~ "fit_error",
+    isTRUE(fit_nonposdef_hessian) ~ "nonposdef_hessian",
+    isTRUE(fit_nonzero_convergence) ~ "nonzero_convergence",
+    isTRUE(fit_rank_deficient) & (design_missing_cells_any | design_no_variation_any) &
+      str_detect(txt, regex("rank-deficient|dropping columns|dropp.*column", ignore_case = TRUE)) ~
+      "design_driven_rank_deficiency_with_fit_signal",
+    isTRUE(fit_rank_deficient) & (design_missing_cells_any | design_no_variation_any) ~
+      "design_driven_rank_deficiency",
+    isTRUE(fit_rank_deficient) &
+      str_detect(txt, regex("rank-deficient|dropping columns|dropp.*column", ignore_case = TRUE)) ~
+      "rank_deficient_design_and_fit_signal",
+    isTRUE(fit_rank_deficient) ~ "rank_deficient_design",
+    str_detect(txt, regex("rank-deficient|dropping columns|dropp.*column", ignore_case = TRUE)) ~
+      "rank_deficient_warning_without_matrix_flag",
+    str_detect(txt, regex("hessian|singular|not positive definite|non-positive-definite", ignore_case = TRUE)) ~
+      "hessian_or_singularity_signal",
+    str_detect(txt, regex("convergence|did not converge|false convergence|iteration limit", ignore_case = TRUE)) ~
+      "convergence_signal",
+    (!is.na(fit_warning_text) || !is.na(fit_message_text)) ~ "warning_or_message_only",
+    TRUE ~ "none"
+  )
+}
+
+# =========================================================
+# EIN FULL-DATA-FIT PRO aggr_level
+# =========================================================
+
+fit_one_full_case_ambiguity <- function(df_aggr,
+                                        formula,
+                                        exp_name = "ambiguity",
+                                        aggr_i,
+                                        n_aoi_in_cluster) {
+  df_aggr <- droplevels(df_aggr)
+
+  n_levels_aoi <- dplyr::n_distinct(df_aggr$AOI)
+  n_levels_ambiguity <- dplyr::n_distinct(df_aggr$ambiguity)
+  n_levels_reference <- dplyr::n_distinct(df_aggr$reference)
+  n_levels_subject <- dplyr::n_distinct(df_aggr$subject)
+  n_levels_topic <- dplyr::n_distinct(df_aggr$Topic)
+  n_levels_participant <- dplyr::n_distinct(df_aggr$Participant)
+
+  if (n_levels_ambiguity < 2) {
+    return(
+      tibble(
+        experiment = exp_name,
+        aggr_level = aggr_i,
+        n_aoi_in_cluster = n_aoi_in_cluster,
+        n_obs = nrow(df_aggr),
+        n_topics = n_levels_topic,
+        n_participants = n_levels_participant,
+        formula = paste(deparse(formula), collapse = " "),
+        X_rank = NA_real_,
+        X_ncol = NA_real_,
+        fit_rank_deficient = NA,
+        redundant_cols = NA_character_,
+        n_distinct_AOI = n_levels_aoi,
+        n_distinct_ambiguity = n_levels_ambiguity,
+        n_distinct_reference = n_levels_reference,
+        n_distinct_subject = n_levels_subject,
+        n_distinct_nLetters = dplyr::n_distinct(df_aggr$nLetters),
+        min_nLetters = min(df_aggr$nLetters),
+        max_nLetters = max(df_aggr$nLetters),
+        design_missing_cells_any = NA,
+        design_no_variation_any = NA,
+        design_missing_ambiguity_cells = NA_character_,
+        design_missing_reference_cells = NA_character_,
+        design_missing_subject_cells = NA_character_,
+        design_aoi_without_ambiguity_variation = NA_character_,
+        design_aoi_without_reference_variation = NA_character_,
+        design_aoi_without_subject_variation = NA_character_,
+        fit_ok = FALSE,
+        fit_error = "ambiguity has fewer than 2 levels in full data for this aggr_level",
+        fit_warning_text = NA_character_,
+        fit_message_text = NA_character_,
+        n_warning_messages = 0L,
+        n_messages = 0L,
+        fit_nonposdef_hessian = NA,
+        fit_nonzero_convergence = NA,
+        aic = NA_real_,
+        bic = NA_real_,
+        logLik = NA_real_,
+        n_obs_metric = NA_real_,
+        rmse_in_sample = NA_real_,
+        mae_in_sample = NA_real_,
+        bias_in_sample = NA_real_,
+        cor_obs_pred = NA_real_,
+        problem_type = "insufficient_levels_ambiguity"
+      )
+    )
+  }
+
+  if (n_levels_reference < 2) {
+    return(
+      tibble(
+        experiment = exp_name,
+        aggr_level = aggr_i,
+        n_aoi_in_cluster = n_aoi_in_cluster,
+        n_obs = nrow(df_aggr),
+        n_topics = n_levels_topic,
+        n_participants = n_levels_participant,
+        formula = paste(deparse(formula), collapse = " "),
+        X_rank = NA_real_,
+        X_ncol = NA_real_,
+        fit_rank_deficient = NA,
+        redundant_cols = NA_character_,
+        n_distinct_AOI = n_levels_aoi,
+        n_distinct_ambiguity = n_levels_ambiguity,
+        n_distinct_reference = n_levels_reference,
+        n_distinct_subject = n_levels_subject,
+        n_distinct_nLetters = dplyr::n_distinct(df_aggr$nLetters),
+        min_nLetters = min(df_aggr$nLetters),
+        max_nLetters = max(df_aggr$nLetters),
+        design_missing_cells_any = NA,
+        design_no_variation_any = NA,
+        design_missing_ambiguity_cells = NA_character_,
+        design_missing_reference_cells = NA_character_,
+        design_missing_subject_cells = NA_character_,
+        design_aoi_without_ambiguity_variation = NA_character_,
+        design_aoi_without_reference_variation = NA_character_,
+        design_aoi_without_subject_variation = NA_character_,
+        fit_ok = FALSE,
+        fit_error = "reference has fewer than 2 levels in full data for this aggr_level",
+        fit_warning_text = NA_character_,
+        fit_message_text = NA_character_,
+        n_warning_messages = 0L,
+        n_messages = 0L,
+        fit_nonposdef_hessian = NA,
+        fit_nonzero_convergence = NA,
+        aic = NA_real_,
+        bic = NA_real_,
+        logLik = NA_real_,
+        n_obs_metric = NA_real_,
+        rmse_in_sample = NA_real_,
+        mae_in_sample = NA_real_,
+        bias_in_sample = NA_real_,
+        cor_obs_pred = NA_real_,
+        problem_type = "insufficient_levels_reference"
+      )
+    )
+  }
+
+  if (n_levels_subject < 2) {
+    return(
+      tibble(
+        experiment = exp_name,
+        aggr_level = aggr_i,
+        n_aoi_in_cluster = n_aoi_in_cluster,
+        n_obs = nrow(df_aggr),
+        n_topics = n_levels_topic,
+        n_participants = n_levels_participant,
+        formula = paste(deparse(formula), collapse = " "),
+        X_rank = NA_real_,
+        X_ncol = NA_real_,
+        fit_rank_deficient = NA,
+        redundant_cols = NA_character_,
+        n_distinct_AOI = n_levels_aoi,
+        n_distinct_ambiguity = n_levels_ambiguity,
+        n_distinct_reference = n_levels_reference,
+        n_distinct_subject = n_levels_subject,
+        n_distinct_nLetters = dplyr::n_distinct(df_aggr$nLetters),
+        min_nLetters = min(df_aggr$nLetters),
+        max_nLetters = max(df_aggr$nLetters),
+        design_missing_cells_any = NA,
+        design_no_variation_any = NA,
+        design_missing_ambiguity_cells = NA_character_,
+        design_missing_reference_cells = NA_character_,
+        design_missing_subject_cells = NA_character_,
+        design_aoi_without_ambiguity_variation = NA_character_,
+        design_aoi_without_reference_variation = NA_character_,
+        design_aoi_without_subject_variation = NA_character_,
+        fit_ok = FALSE,
+        fit_error = "subject has fewer than 2 levels in full data for this aggr_level",
+        fit_warning_text = NA_character_,
+        fit_message_text = NA_character_,
+        n_warning_messages = 0L,
+        n_messages = 0L,
+        fit_nonposdef_hessian = NA,
+        fit_nonzero_convergence = NA,
+        aic = NA_real_,
+        bic = NA_real_,
+        logLik = NA_real_,
+        n_obs_metric = NA_real_,
+        rmse_in_sample = NA_real_,
+        mae_in_sample = NA_real_,
+        bias_in_sample = NA_real_,
+        cor_obs_pred = NA_real_,
+        problem_type = "insufficient_levels_subject"
+      )
+    )
+  }
+
+  if (n_levels_aoi < 2 && n_aoi_in_cluster > 1) {
+    return(
+      tibble(
+        experiment = exp_name,
+        aggr_level = aggr_i,
+        n_aoi_in_cluster = n_aoi_in_cluster,
+        n_obs = nrow(df_aggr),
+        n_topics = n_levels_topic,
+        n_participants = n_levels_participant,
+        formula = paste(deparse(formula), collapse = " "),
+        X_rank = NA_real_,
+        X_ncol = NA_real_,
+        fit_rank_deficient = NA,
+        redundant_cols = NA_character_,
+        n_distinct_AOI = n_levels_aoi,
+        n_distinct_ambiguity = n_levels_ambiguity,
+        n_distinct_reference = n_levels_reference,
+        n_distinct_subject = n_levels_subject,
+        n_distinct_nLetters = dplyr::n_distinct(df_aggr$nLetters),
+        min_nLetters = min(df_aggr$nLetters),
+        max_nLetters = max(df_aggr$nLetters),
+        design_missing_cells_any = NA,
+        design_no_variation_any = NA,
+        design_missing_ambiguity_cells = NA_character_,
+        design_missing_reference_cells = NA_character_,
+        design_missing_subject_cells = NA_character_,
+        design_aoi_without_ambiguity_variation = NA_character_,
+        design_aoi_without_reference_variation = NA_character_,
+        design_aoi_without_subject_variation = NA_character_,
+        fit_ok = FALSE,
+        fit_error = "AOI has fewer than 2 levels although cluster is expected to contain multiple AOIs",
+        fit_warning_text = NA_character_,
+        fit_message_text = NA_character_,
+        n_warning_messages = 0L,
+        n_messages = 0L,
+        fit_nonposdef_hessian = NA,
+        fit_nonzero_convergence = NA,
+        aic = NA_real_,
+        bic = NA_real_,
+        logLik = NA_real_,
+        n_obs_metric = NA_real_,
+        rmse_in_sample = NA_real_,
+        mae_in_sample = NA_real_,
+        bias_in_sample = NA_real_,
+        cor_obs_pred = NA_real_,
+        problem_type = "insufficient_levels_AOI"
+      )
+    )
+  }
+
+  design_structure <- inspect_design_structure_ambiguity(df_aggr)
+
+  design_info <- inspect_design_matrix_identifiability_ambiguity(
+    df = df_aggr,
+    formula = formula
+  )
+
+  fit_res <- fit_glmmtmb_capture_ambiguity(
+    df = df_aggr,
+    formula = formula
+  )
+
+  fit_info <- fit_res$fit_tbl
+  fit_obj  <- fit_res$fit_obj
+
+  fit_metrics <- if (!is.null(fit_obj)) {
+    fitted_vals <- tryCatch(
+      predict(fit_obj, type = "response", re.form = NULL),
+      error = function(e) rep(NA_real_, nrow(df_aggr))
+    )
+
+    calc_fit_metrics(
+      obs = df_aggr$TRT,
+      pred = fitted_vals
+    )
+  } else {
+    tibble(
+      n_obs_metric = NA_real_,
+      rmse_in_sample = NA_real_,
+      mae_in_sample = NA_real_,
+      bias_in_sample = NA_real_,
+      cor_obs_pred = NA_real_
+    )
+  }
+
+  tibble(
+    experiment = exp_name,
+    aggr_level = aggr_i,
+    n_aoi_in_cluster = n_aoi_in_cluster,
+    n_obs = nrow(df_aggr),
+    n_topics = n_levels_topic,
+    n_participants = n_levels_participant,
+    formula = paste(deparse(formula), collapse = " ")
+  ) %>%
+    bind_cols(design_structure) %>%
+    bind_cols(design_info) %>%
+    bind_cols(fit_info) %>%
+    bind_cols(fit_metrics) %>%
+    mutate(
+      problem_type = classify_problem_ambiguity(
+        fit_rank_deficient = fit_rank_deficient,
+        fit_warning_text = fit_warning_text,
+        fit_message_text = fit_message_text,
+        fit_error = fit_error,
+        fit_nonposdef_hessian = fit_nonposdef_hessian,
+        fit_nonzero_convergence = fit_nonzero_convergence,
+        design_missing_cells_any = design_missing_cells_any,
+        design_no_variation_any = design_no_variation_any
+      )
+    )
+}
+
+# =========================================================
+# FULL-DATA-FITS ÜBER aggr_level
+# =========================================================
+
+run_fullfits_ambiguity <- function(df,
+                                   exp_name = "ambiguity") {
+  prep <- prep_ambiguity_fullfit_data(df)
+  dat <- prep$data
+  cluster_sizes <- prep$cluster_sizes
+
+  aggr_levels <- unique(as.character(dat$aggr_level))
+
+  fullfit_all <- purrr::map_dfr(aggr_levels, function(aggr_i) {
+    df_aggr <- dat %>%
+      filter(as.character(aggr_level) == aggr_i)
+
+    n_aoi_cluster <- cluster_sizes$n_aoi_in_cluster[
+      match(aggr_i, as.character(cluster_sizes$aggr_level))
+    ]
+
+    formula_i <- make_formula_cluster_ambiguity(
+      response = "TRT",
+      n_aoi_in_cluster = n_aoi_cluster
+    )
+
+    fit_one_full_case_ambiguity(
+      df_aggr = df_aggr,
+      formula = formula_i,
+      exp_name = exp_name,
+      aggr_i = aggr_i,
+      n_aoi_in_cluster = n_aoi_cluster
+    )
+  })
+
+  problem_counts <- fullfit_all %>%
+    count(problem_type, sort = TRUE)
+
+  problem_fits_only <- fullfit_all %>%
+    filter(
+      problem_type != "none" |
+        fit_ok %in% FALSE |
+        fit_nonposdef_hessian %in% TRUE |
+        fit_nonzero_convergence %in% TRUE |
+        fit_rank_deficient %in% TRUE |
+        n_warning_messages > 0
+    ) %>%
+    arrange(aggr_level)
+
+  list(
+    fullfit_all = fullfit_all,
+    problem_counts = problem_counts,
+    problem_fits_only = problem_fits_only
+  )
+}
+
+# =========================================================
+# AUSFÜHREN
+# =========================================================
+
+res_ambiguity_fullfit <- run_fullfits_ambiguity(
+  df = ambiguity,
+  exp_name = "ambiguity"
+)
+
+# =========================================================
+# OUTPUTS
+# =========================================================
+
+round_df_4(res_ambiguity_fullfit$fullfit_all)
+round_df_4(res_ambiguity_fullfit$problem_counts)
+round_df_4(res_ambiguity_fullfit$problem_fits_only)
+```
+Experiment Ambiguity:
+Hier stößt das Modell mit aggregierten AOIs an Designbedingte und numerische rank-deficiency. Da in einigen AOIs nicht alle Konditionen gesehen werden, kann das Modell diese nicht schätzen. Damit ist der Ansatz der aggregierten AOIs hier nicht sauber einsetzbar, und es empfiehlt sich, das Normierte Modell mit einzelnen AOIs zu verwenden. 
+

@@ -1,0 +1,2524 @@
+---
+title: "ModellVariantenVergleiche"
+output: html_document
+---
+
+```{r}
+library(here)
+library(dplyr)
+library(tidyr)
+library(purrr)
+library(tibble)
+library(ggplot2)
+library(lme4)
+library(mgcv)
+options(scipen = 999)
+```
+
+```{r}
+c_bed <- readRDS(here("prepped Data", "C_bed.rds"))
+c_ein <- readRDS(here("prepped Data", "C_ein.rds"))
+n_bed <- readRDS(here("prepped Data", "N_bed.rds"))
+n_ein <- readRDS(here("prepped Data", "N_ein.rds"))
+CS    <- readRDS(here("prepped Data", "CS.rds"))
+INC   <- readRDS(here("prepped Data", "INC.rds"))
+```
+
+```{r}
+c_bed <- c_bed %>% dplyr::filter(!is.na(FRT), FRT > 0)
+c_ein <- c_ein %>% dplyr::filter(!is.na(FRT), FRT > 0)
+n_bed <- n_bed %>% dplyr::filter(!is.na(FRT), FRT > 0)
+n_ein <- n_ein %>% dplyr::filter(!is.na(FRT), FRT > 0)
+CS    <- CS    %>% dplyr::filter(!is.na(FRT), FRT > 0)
+INC   <- INC   %>% dplyr::filter(!is.na(FRT), FRT > 0)
+```
+
+
+*Vergleich: AOI Spezfische Prediciton und Fit-Fehler im Topic LOO*
+```{r}
+library(dplyr)
+library(tidyr)
+library(purrr)
+library(tibble)
+library(glmmTMB)
+
+# =========================================================
+# INPUT
+# =========================================================
+
+dfs <- list(
+  c_bed = c_bed,
+  c_ein = c_ein,
+  n_bed = n_bed,
+  n_ein = n_ein,
+  CS    = CS
+)
+
+experiments_with_speaker <- c("n_bed", "n_ein", "CS")
+
+# =========================================================
+# HELFER
+# =========================================================
+
+safe_plain_df <- function(df) {
+  out <- as.data.frame(df, stringsAsFactors = FALSE)
+  rownames(out) <- NULL
+  out
+}
+
+round_df_4 <- function(df) {
+  df %>%
+    dplyr::mutate(
+      dplyr::across(where(is.numeric), ~ round(.x, 4))
+    )
+}
+
+safe_mean <- function(x) {
+  if (length(x) == 0 || all(is.na(x))) return(NA_real_)
+  mean(x, na.rm = TRUE)
+}
+
+safe_median <- function(x) {
+  if (length(x) == 0 || all(is.na(x))) return(NA_real_)
+  stats::median(x, na.rm = TRUE)
+}
+
+safe_rmse <- function(sq_error) {
+  if (length(sq_error) == 0 || all(is.na(sq_error))) return(NA_real_)
+  sqrt(mean(sq_error, na.rm = TRUE))
+}
+
+collapse_unique <- function(x) {
+  x <- unique(stats::na.omit(x))
+  if (length(x) == 0) return(NA_character_)
+  paste(x, collapse = " | ")
+}
+
+# =========================================================
+# LEERE TABELLEN
+# =========================================================
+
+empty_cv_preds_tbl <- function() {
+  tibble(
+    experiment = character(),
+    model_scope = character(),   # single / aggregated / all
+    heldout_topic = character(),
+    AOI = character(),
+    aggr_level = character(),
+    fit_id = character(),
+    n_train = integer(),
+    n_test = integer(),
+    Participant = character(),
+    Topic = character(),
+    condition = character(),
+    speaker = character(),
+    observed = numeric(),
+    .pred = numeric(),
+    bias = numeric(),
+    abs_error = numeric(),
+    sq_error = numeric(),
+    split_ok = logical(),
+    split_reason = character(),
+    fit_ok = logical(),
+    fit_error = character(),
+    predict_ok = logical(),
+    predict_error = character(),
+    fit_warning = character(),
+    fit_nonposdef_hessian = logical(),
+    fit_nonzero_convergence = logical()
+  )
+}
+
+empty_fit_level_tbl <- function() {
+  tibble(
+    experiment = character(),
+    model_scope = character(),
+    heldout_topic = character(),
+    fit_id = character(),
+    aggr_level = character(),
+    n_train = integer(),
+    n_test = integer(),
+    split_ok = logical(),
+    split_reason = character(),
+    fit_ok = logical(),
+    fit_error = character(),
+    predict_ok = logical(),
+    predict_error = character(),
+    fit_nonposdef_hessian = logical(),
+    fit_nonzero_convergence = logical(),
+    fit_warning = character(),
+    n_pred = integer(),
+    rmse = numeric(),
+    mae = numeric(),
+    mean_bias = numeric(),
+    median_bias = numeric()
+  )
+}
+
+empty_aoi_prediction_tbl <- function() {
+  tibble(
+    experiment = character(),
+    model_scope = character(),
+    heldout_topic = character(),
+    aggr_level = character(),
+    AOI = character(),
+    n_pred = integer(),
+    rmse = numeric(),
+    mae = numeric(),
+    mean_bias = numeric(),
+    median_bias = numeric()
+  )
+}
+
+empty_aoi_comparison_tbl <- function() {
+  tibble(
+    experiment = character(),
+    heldout_topic = character(),
+    aggr_level = character(),
+    AOI = character(),
+    rmse__single = numeric(),
+    rmse__aggregated = numeric(),
+    rmse__all = numeric(),
+    mae__single = numeric(),
+    mae__aggregated = numeric(),
+    mae__all = numeric(),
+    mean_bias__single = numeric(),
+    mean_bias__aggregated = numeric(),
+    mean_bias__all = numeric(),
+    median_bias__single = numeric(),
+    median_bias__aggregated = numeric(),
+    median_bias__all = numeric(),
+    n_pred__single = integer(),
+    n_pred__aggregated = integer(),
+    n_pred__all = integer(),
+    n_aoi_in_cluster = integer(),
+    comparable_single_vs_aggregated = logical(),
+    comparable_single_vs_all = logical(),
+    comparable_aggregated_vs_all = logical(),
+    delta_rmse_aggregated_minus_single = numeric(),
+    delta_rmse_all_minus_single = numeric(),
+    delta_rmse_all_minus_aggregated = numeric(),
+    delta_mae_aggregated_minus_single = numeric(),
+    delta_mae_all_minus_single = numeric(),
+    delta_mae_all_minus_aggregated = numeric(),
+    delta_mean_bias_aggregated_minus_single = numeric(),
+    delta_mean_bias_all_minus_single = numeric(),
+    delta_mean_bias_all_minus_aggregated = numeric(),
+    delta_median_bias_aggregated_minus_single = numeric(),
+    delta_median_bias_all_minus_single = numeric(),
+    delta_median_bias_all_minus_aggregated = numeric()
+  )
+}
+
+empty_fit_problem_summary_tbl <- function() {
+  tibble(
+    experiment = character(),
+    model_scope = character(),
+    n_fits_total = integer(),
+    n_valid_splits = integer(),
+    n_invalid_splits = integer(),
+    n_fit_ok = integer(),
+    n_fit_failed = integer(),
+    n_predict_ok = integer(),
+    n_predict_failed = integer(),
+    n_nonposdef_hessian_fits = integer(),
+    n_nonzero_convergence_fits = integer(),
+    n_warning_fits = integer(),
+    prop_invalid_splits = numeric(),
+    prop_fit_failed = numeric(),
+    prop_predict_failed = numeric(),
+    prop_nonposdef_hessian = numeric(),
+    prop_nonzero_convergence = numeric(),
+    prop_warning = numeric(),
+    rmse_overall = numeric(),
+    mae_overall = numeric(),
+    mean_bias_overall = numeric(),
+    median_bias_overall = numeric()
+  )
+}
+
+# =========================================================
+# DATEN VORBEREITEN
+# nur echte Cluster mit > 1 AOI, Gamma braucht > 0
+# =========================================================
+
+prep_topic_cv_data <- function(df,
+                               response = "FRT",
+                               use_speaker = FALSE) {
+  needed <- c(response, "nLetters", "Participant", "Topic", "condition", "AOI", "aggr_level")
+  if (use_speaker) needed <- c(needed, "speaker")
+
+  missing_cols <- setdiff(needed, names(df))
+  if (length(missing_cols) > 0) {
+    stop("Fehlende Variablen: ", paste(missing_cols, collapse = ", "))
+  }
+
+  out <- df %>%
+    dplyr::filter(!is.na(.data[[response]])) %>%
+    dplyr::filter(.data[[response]] > 0) %>%
+    dplyr::filter(!is.na(nLetters), is.finite(nLetters), nLetters > 0) %>%
+    dplyr::filter(!is.na(Participant), !is.na(Topic), !is.na(condition), !is.na(AOI), !is.na(aggr_level))
+
+  if (use_speaker) {
+    out <- out %>%
+      dplyr::filter(!is.na(speaker))
+  }
+
+  out <- out %>%
+    dplyr::mutate(
+      Participant = factor(Participant),
+      Topic = factor(Topic),
+      condition = factor(condition),
+      AOI = factor(AOI),
+      aggr_level = factor(aggr_level)
+    )
+
+  if (use_speaker) {
+    out <- out %>%
+      dplyr::mutate(speaker = factor(speaker))
+  }
+
+  cluster_sizes <- out %>%
+    dplyr::distinct(aggr_level, AOI) %>%
+    dplyr::count(aggr_level, name = "n_aoi_in_cluster")
+
+  real_clusters <- cluster_sizes %>%
+    dplyr::filter(n_aoi_in_cluster > 1) %>%
+    dplyr::pull(aggr_level) %>%
+    as.character()
+
+  out <- out %>%
+    dplyr::filter(as.character(aggr_level) %in% real_clusters)
+
+  list(
+    data = safe_plain_df(out),
+    cluster_sizes = cluster_sizes %>%
+      dplyr::filter(as.character(aggr_level) %in% real_clusters)
+  )
+}
+
+# =========================================================
+# FORMELN
+# =========================================================
+
+make_formula_single <- function(response = "FRT",
+                                use_speaker = FALSE) {
+  rhs <- if (use_speaker) {
+    "condition * speaker + nLetters + (1 | Topic) + (1 | Participant)"
+  } else {
+    "condition + nLetters + (1 | Topic) + (1 | Participant)"
+  }
+
+  stats::as.formula(paste(response, "~", rhs))
+}
+
+make_formula_aggregated <- function(response = "FRT",
+                                    use_speaker = FALSE) {
+  rhs <- if (use_speaker) {
+    "AOI * condition * speaker + nLetters + (1 | Topic) + (1 | Participant)"
+  } else {
+    "AOI * condition + nLetters + (1 | Topic) + (1 | Participant)"
+  }
+
+  stats::as.formula(paste(response, "~", rhs))
+}
+
+make_formula_all <- function(response = "FRT",
+                             use_speaker = FALSE) {
+  rhs <- if (use_speaker) {
+    "AOI * condition * speaker + nLetters + (1 | Topic) + (1 | Participant)"
+  } else {
+    "AOI * condition + nLetters + (1 | Topic) + (1 | Participant)"
+  }
+
+  stats::as.formula(paste(response, "~", rhs))
+}
+
+# =========================================================
+# SPLIT CHECKS
+# =========================================================
+
+check_split_single <- function(train_df,
+                               test_df,
+                               response = "FRT",
+                               use_speaker = FALSE) {
+  reasons <- character(0)
+
+  if (nrow(train_df) == 0) reasons <- c(reasons, "empty_train")
+  if (nrow(test_df) == 0) reasons <- c(reasons, "empty_test")
+  if (length(reasons) > 0) {
+    return(list(ok = FALSE, reason = paste(reasons, collapse = " | ")))
+  }
+
+  if (dplyr::n_distinct(train_df$condition) < 2) {
+    reasons <- c(reasons, "condition_has_less_than_2_levels_in_train")
+  }
+
+  if (use_speaker && dplyr::n_distinct(train_df$speaker) < 2) {
+    reasons <- c(reasons, "speaker_has_less_than_2_levels_in_train")
+  }
+
+  if (dplyr::n_distinct(train_df$nLetters) < 2) {
+    reasons <- c(reasons, "nLetters_has_less_than_2_values_in_train")
+  }
+
+  train_condition_levels <- unique(as.character(train_df$condition))
+  test_condition_levels  <- unique(as.character(test_df$condition))
+  if (!all(test_condition_levels %in% train_condition_levels)) {
+    reasons <- c(reasons, "test_condition_level_missing_in_train")
+  }
+
+  if (use_speaker) {
+    train_speaker_levels <- unique(as.character(train_df$speaker))
+    test_speaker_levels  <- unique(as.character(test_df$speaker))
+    if (!all(test_speaker_levels %in% train_speaker_levels)) {
+      reasons <- c(reasons, "test_speaker_level_missing_in_train")
+    }
+  }
+
+  if (any(!is.finite(train_df[[response]])) || any(train_df[[response]] <= 0, na.rm = TRUE)) {
+    reasons <- c(reasons, "invalid_response_in_train")
+  }
+  if (any(!is.finite(test_df[[response]])) || any(test_df[[response]] <= 0, na.rm = TRUE)) {
+    reasons <- c(reasons, "invalid_response_in_test")
+  }
+
+  list(
+    ok = length(reasons) == 0,
+    reason = if (length(reasons) == 0) NA_character_ else paste(reasons, collapse = " | ")
+  )
+}
+
+check_split_aggregated <- function(train_df,
+                                   test_df,
+                                   response = "FRT",
+                                   use_speaker = FALSE) {
+  reasons <- character(0)
+
+  if (nrow(train_df) == 0) reasons <- c(reasons, "empty_train")
+  if (nrow(test_df) == 0) reasons <- c(reasons, "empty_test")
+  if (length(reasons) > 0) {
+    return(list(ok = FALSE, reason = paste(reasons, collapse = " | ")))
+  }
+
+  if (dplyr::n_distinct(train_df$AOI) < 2) {
+    reasons <- c(reasons, "aoi_has_less_than_2_levels_in_train")
+  }
+
+  if (dplyr::n_distinct(train_df$condition) < 2) {
+    reasons <- c(reasons, "condition_has_less_than_2_levels_in_train")
+  }
+
+  if (use_speaker && dplyr::n_distinct(train_df$speaker) < 2) {
+    reasons <- c(reasons, "speaker_has_less_than_2_levels_in_train")
+  }
+
+  if (dplyr::n_distinct(train_df$nLetters) < 2) {
+    reasons <- c(reasons, "nLetters_has_less_than_2_values_in_train")
+  }
+
+  train_aoi_levels <- unique(as.character(train_df$AOI))
+  test_aoi_levels  <- unique(as.character(test_df$AOI))
+  if (!all(test_aoi_levels %in% train_aoi_levels)) {
+    reasons <- c(reasons, "test_aoi_level_missing_in_train")
+  }
+
+  train_condition_levels <- unique(as.character(train_df$condition))
+  test_condition_levels  <- unique(as.character(test_df$condition))
+  if (!all(test_condition_levels %in% train_condition_levels)) {
+    reasons <- c(reasons, "test_condition_level_missing_in_train")
+  }
+
+  if (use_speaker) {
+    train_speaker_levels <- unique(as.character(train_df$speaker))
+    test_speaker_levels  <- unique(as.character(test_df$speaker))
+    if (!all(test_speaker_levels %in% train_speaker_levels)) {
+      reasons <- c(reasons, "test_speaker_level_missing_in_train")
+    }
+  }
+
+  if (any(!is.finite(train_df[[response]])) || any(train_df[[response]] <= 0, na.rm = TRUE)) {
+    reasons <- c(reasons, "invalid_response_in_train")
+  }
+  if (any(!is.finite(test_df[[response]])) || any(test_df[[response]] <= 0, na.rm = TRUE)) {
+    reasons <- c(reasons, "invalid_response_in_test")
+  }
+
+  list(
+    ok = length(reasons) == 0,
+    reason = if (length(reasons) == 0) NA_character_ else paste(reasons, collapse = " | ")
+  )
+}
+
+check_split_all <- function(train_df,
+                            test_df,
+                            response = "FRT",
+                            use_speaker = FALSE) {
+  reasons <- character(0)
+
+  if (nrow(train_df) == 0) reasons <- c(reasons, "empty_train")
+  if (nrow(test_df) == 0) reasons <- c(reasons, "empty_test")
+  if (length(reasons) > 0) {
+    return(list(ok = FALSE, reason = paste(reasons, collapse = " | ")))
+  }
+
+  if (dplyr::n_distinct(train_df$AOI) < 2) {
+    reasons <- c(reasons, "aoi_has_less_than_2_levels_in_train")
+  }
+
+  if (dplyr::n_distinct(train_df$condition) < 2) {
+    reasons <- c(reasons, "condition_has_less_than_2_levels_in_train")
+  }
+
+  if (use_speaker && dplyr::n_distinct(train_df$speaker) < 2) {
+    reasons <- c(reasons, "speaker_has_less_than_2_levels_in_train")
+  }
+
+  if (dplyr::n_distinct(train_df$nLetters) < 2) {
+    reasons <- c(reasons, "nLetters_has_less_than_2_values_in_train")
+  }
+
+  train_aoi_levels <- unique(as.character(train_df$AOI))
+  test_aoi_levels  <- unique(as.character(test_df$AOI))
+  if (!all(test_aoi_levels %in% train_aoi_levels)) {
+    reasons <- c(reasons, "test_aoi_level_missing_in_train")
+  }
+
+  train_condition_levels <- unique(as.character(train_df$condition))
+  test_condition_levels  <- unique(as.character(test_df$condition))
+  if (!all(test_condition_levels %in% train_condition_levels)) {
+    reasons <- c(reasons, "test_condition_level_missing_in_train")
+  }
+
+  if (use_speaker) {
+    train_speaker_levels <- unique(as.character(train_df$speaker))
+    test_speaker_levels  <- unique(as.character(test_df$speaker))
+    if (!all(test_speaker_levels %in% train_speaker_levels)) {
+      reasons <- c(reasons, "test_speaker_level_missing_in_train")
+    }
+  }
+
+  if (any(!is.finite(train_df[[response]])) || any(train_df[[response]] <= 0, na.rm = TRUE)) {
+    reasons <- c(reasons, "invalid_response_in_train")
+  }
+  if (any(!is.finite(test_df[[response]])) || any(test_df[[response]] <= 0, na.rm = TRUE)) {
+    reasons <- c(reasons, "invalid_response_in_test")
+  }
+
+  list(
+    ok = length(reasons) == 0,
+    reason = if (length(reasons) == 0) NA_character_ else paste(reasons, collapse = " | ")
+  )
+}
+
+# =========================================================
+# FIT + PREDICT
+# =========================================================
+
+fit_predict_gamma <- function(train_df,
+                              test_df,
+                              formula_full,
+                              split_check_fun,
+                              response = "FRT",
+                              use_speaker = FALSE,
+                              pred_re_form = NULL) {
+  split_check <- split_check_fun(
+    train_df = train_df,
+    test_df = test_df,
+    response = response,
+    use_speaker = use_speaker
+  )
+
+  if (!split_check$ok) {
+    return(list(
+      pred = rep(NA_real_, nrow(test_df)),
+      split_ok = FALSE,
+      split_reason = split_check$reason,
+      fit_ok = FALSE,
+      fit_error = "invalid_split",
+      predict_ok = FALSE,
+      predict_error = "no_prediction_because_invalid_split",
+      fit_warning = NA_character_,
+      fit_nonposdef_hessian = NA,
+      fit_nonzero_convergence = NA
+    ))
+  }
+
+  train_df_fit <- droplevels(train_df)
+  test_df_pred <- droplevels(test_df)
+
+  warns <- character(0)
+  msgs <- character(0)
+
+  fit <- withCallingHandlers(
+    tryCatch(
+      glmmTMB::glmmTMB(
+        formula = formula_full,
+        data = train_df_fit,
+        family = Gamma(link = "log")
+      ),
+      error = function(e) e
+    ),
+    warning = function(w) {
+      warns <<- c(warns, conditionMessage(w))
+      invokeRestart("muffleWarning")
+    },
+    message = function(m) {
+      msgs <<- c(msgs, conditionMessage(m))
+      invokeRestart("muffleMessage")
+    }
+  )
+
+  if (inherits(fit, "error")) {
+    return(list(
+      pred = rep(NA_real_, nrow(test_df_pred)),
+      split_ok = TRUE,
+      split_reason = NA_character_,
+      fit_ok = FALSE,
+      fit_error = conditionMessage(fit),
+      predict_ok = FALSE,
+      predict_error = "no_prediction_because_fit_failed",
+      fit_warning = collapse_unique(c(warns, msgs)),
+      fit_nonposdef_hessian = NA,
+      fit_nonzero_convergence = NA
+    ))
+  }
+
+  fit_nonposdef_hessian <- tryCatch(
+    !isTRUE(fit$sdr$pdHess),
+    error = function(e) NA
+  )
+
+  fit_nonzero_convergence <- tryCatch(
+    {
+      conv <- fit$fit$convergence
+      if (is.null(conv)) NA else conv != 0
+    },
+    error = function(e) NA
+  )
+
+  pred_obj <- tryCatch(
+    predict(
+      fit,
+      newdata = test_df_pred,
+      type = "response",
+      re.form = pred_re_form,
+      allow.new.levels = TRUE
+    ),
+    error = function(e) e
+  )
+
+  if (inherits(pred_obj, "error")) {
+    return(list(
+      pred = rep(NA_real_, nrow(test_df_pred)),
+      split_ok = TRUE,
+      split_reason = NA_character_,
+      fit_ok = TRUE,
+      fit_error = NA_character_,
+      predict_ok = FALSE,
+      predict_error = conditionMessage(pred_obj),
+      fit_warning = collapse_unique(c(warns, msgs)),
+      fit_nonposdef_hessian = fit_nonposdef_hessian,
+      fit_nonzero_convergence = fit_nonzero_convergence
+    ))
+  }
+
+  list(
+    pred = as.numeric(pred_obj),
+    split_ok = TRUE,
+    split_reason = NA_character_,
+    fit_ok = TRUE,
+    fit_error = NA_character_,
+    predict_ok = TRUE,
+    predict_error = NA_character_,
+    fit_warning = collapse_unique(c(warns, msgs)),
+    fit_nonposdef_hessian = fit_nonposdef_hessian,
+    fit_nonzero_convergence = fit_nonzero_convergence
+  )
+}
+
+# =========================================================
+# EIN EXPERIMENT
+# =========================================================
+
+run_topic_cv_compare_one_experiment_gamma <- function(df,
+                                                      exp_name,
+                                                      response = "FRT",
+                                                      use_speaker = FALSE,
+                                                      pred_re_form = NULL) {
+  prep <- prep_topic_cv_data(
+    df = df,
+    response = response,
+    use_speaker = use_speaker
+  )
+
+  dat <- prep$data
+  cluster_sizes <- prep$cluster_sizes
+
+  if (nrow(dat) == 0) {
+    return(list(
+      cv_preds = empty_cv_preds_tbl(),
+      fit_level_summary = empty_fit_level_tbl(),
+      aoi_prediction_summary = empty_aoi_prediction_tbl(),
+      aoi_comparison = empty_aoi_comparison_tbl(),
+      fit_problem_summary = empty_fit_problem_summary_tbl()
+    ))
+  }
+
+  topics <- unique(as.character(dat$Topic))
+
+  # -----------------------------------------------------
+  # SINGLE
+  # -----------------------------------------------------
+
+  single_preds <- purrr::map_dfr(topics, function(topic_i) {
+    test_topic_df <- dat %>% dplyr::filter(as.character(Topic) == topic_i)
+    aois_in_test <- unique(as.character(test_topic_df$AOI))
+
+    purrr::map_dfr(aois_in_test, function(aoi_i) {
+      train_df <- dat %>%
+        dplyr::filter(as.character(Topic) != topic_i,
+                      as.character(AOI) == aoi_i)
+
+      test_df <- dat %>%
+        dplyr::filter(as.character(Topic) == topic_i,
+                      as.character(AOI) == aoi_i)
+
+      fit_out <- fit_predict_gamma(
+        train_df = train_df,
+        test_df = test_df,
+        formula_full = make_formula_single(response = response, use_speaker = use_speaker),
+        split_check_fun = check_split_single,
+        response = response,
+        use_speaker = use_speaker,
+        pred_re_form = pred_re_form
+      )
+
+      tibble(
+        experiment = exp_name,
+        model_scope = "single",
+        heldout_topic = topic_i,
+        AOI = aoi_i,
+        aggr_level = unique(as.character(test_df$aggr_level))[1],
+        fit_id = paste(exp_name, "single", topic_i, aoi_i, sep = "__"),
+        n_train = nrow(train_df),
+        n_test = nrow(test_df),
+        Participant = as.character(test_df$Participant),
+        Topic = as.character(test_df$Topic),
+        condition = as.character(test_df$condition),
+        speaker = if (use_speaker) as.character(test_df$speaker) else NA_character_,
+        observed = test_df[[response]],
+        .pred = fit_out$pred,
+        bias = fit_out$pred - test_df[[response]],
+        abs_error = abs(test_df[[response]] - fit_out$pred),
+        sq_error = (test_df[[response]] - fit_out$pred)^2,
+        split_ok = fit_out$split_ok,
+        split_reason = fit_out$split_reason,
+        fit_ok = fit_out$fit_ok,
+        fit_error = fit_out$fit_error,
+        predict_ok = fit_out$predict_ok,
+        predict_error = fit_out$predict_error,
+        fit_warning = fit_out$fit_warning,
+        fit_nonposdef_hessian = fit_out$fit_nonposdef_hessian,
+        fit_nonzero_convergence = fit_out$fit_nonzero_convergence
+      )
+    })
+  })
+
+  # -----------------------------------------------------
+  # AGGREGATED
+  # -----------------------------------------------------
+
+  aggregated_preds <- purrr::map_dfr(topics, function(topic_i) {
+    test_topic_df <- dat %>% dplyr::filter(as.character(Topic) == topic_i)
+    groups_in_test <- unique(as.character(test_topic_df$aggr_level))
+
+    purrr::map_dfr(groups_in_test, function(group_i) {
+      train_df <- dat %>%
+        dplyr::filter(as.character(Topic) != topic_i,
+                      as.character(aggr_level) == group_i)
+
+      test_df <- dat %>%
+        dplyr::filter(as.character(Topic) == topic_i,
+                      as.character(aggr_level) == group_i)
+
+      fit_out <- fit_predict_gamma(
+        train_df = train_df,
+        test_df = test_df,
+        formula_full = make_formula_aggregated(response = response, use_speaker = use_speaker),
+        split_check_fun = check_split_aggregated,
+        response = response,
+        use_speaker = use_speaker,
+        pred_re_form = pred_re_form
+      )
+
+      tibble(
+        experiment = exp_name,
+        model_scope = "aggregated",
+        heldout_topic = topic_i,
+        AOI = as.character(test_df$AOI),
+        aggr_level = group_i,
+        fit_id = paste(exp_name, "aggregated", topic_i, group_i, sep = "__"),
+        n_train = nrow(train_df),
+        n_test = nrow(test_df),
+        Participant = as.character(test_df$Participant),
+        Topic = as.character(test_df$Topic),
+        condition = as.character(test_df$condition),
+        speaker = if (use_speaker) as.character(test_df$speaker) else NA_character_,
+        observed = test_df[[response]],
+        .pred = fit_out$pred,
+        bias = fit_out$pred - test_df[[response]],
+        abs_error = abs(test_df[[response]] - fit_out$pred),
+        sq_error = (test_df[[response]] - fit_out$pred)^2,
+        split_ok = fit_out$split_ok,
+        split_reason = fit_out$split_reason,
+        fit_ok = fit_out$fit_ok,
+        fit_error = fit_out$fit_error,
+        predict_ok = fit_out$predict_ok,
+        predict_error = fit_out$predict_error,
+        fit_warning = fit_out$fit_warning,
+        fit_nonposdef_hessian = fit_out$fit_nonposdef_hessian,
+        fit_nonzero_convergence = fit_out$fit_nonzero_convergence
+      )
+    })
+  })
+
+  # -----------------------------------------------------
+  # ALL
+  # ein Fit pro Topic-LOO über alle echten Cluster-AOIs
+  # Vorhersage wird danach AOI-spezifisch ausgewertet
+  # -----------------------------------------------------
+
+  all_preds <- purrr::map_dfr(topics, function(topic_i) {
+    train_df <- dat %>%
+      dplyr::filter(as.character(Topic) != topic_i)
+
+    test_df <- dat %>%
+      dplyr::filter(as.character(Topic) == topic_i)
+
+    fit_out <- fit_predict_gamma(
+      train_df = train_df,
+      test_df = test_df,
+      formula_full = make_formula_all(response = response, use_speaker = use_speaker),
+      split_check_fun = check_split_all,
+      response = response,
+      use_speaker = use_speaker,
+      pred_re_form = pred_re_form
+    )
+
+    tibble(
+      experiment = exp_name,
+      model_scope = "all",
+      heldout_topic = topic_i,
+      AOI = as.character(test_df$AOI),
+      aggr_level = as.character(test_df$aggr_level),
+      fit_id = paste(exp_name, "all", topic_i, sep = "__"),
+      n_train = nrow(train_df),
+      n_test = nrow(test_df),
+      Participant = as.character(test_df$Participant),
+      Topic = as.character(test_df$Topic),
+      condition = as.character(test_df$condition),
+      speaker = if (use_speaker) as.character(test_df$speaker) else NA_character_,
+      observed = test_df[[response]],
+      .pred = fit_out$pred,
+      bias = fit_out$pred - test_df[[response]],
+      abs_error = abs(test_df[[response]] - fit_out$pred),
+      sq_error = (test_df[[response]] - fit_out$pred)^2,
+      split_ok = fit_out$split_ok,
+      split_reason = fit_out$split_reason,
+      fit_ok = fit_out$fit_ok,
+      fit_error = fit_out$fit_error,
+      predict_ok = fit_out$predict_ok,
+      predict_error = fit_out$predict_error,
+      fit_warning = fit_out$fit_warning,
+      fit_nonposdef_hessian = fit_out$fit_nonposdef_hessian,
+      fit_nonzero_convergence = fit_out$fit_nonzero_convergence
+    )
+  })
+
+  cv_preds <- dplyr::bind_rows(single_preds, aggregated_preds, all_preds)
+
+  # -----------------------------------------------------
+  # FIT-LEVEL
+  # -----------------------------------------------------
+
+  fit_level_summary <- cv_preds %>%
+    dplyr::group_by(experiment, model_scope, heldout_topic, fit_id, aggr_level) %>%
+    dplyr::summarise(
+      n_train = dplyr::first(n_train),
+      n_test = dplyr::first(n_test),
+      split_ok = dplyr::first(split_ok),
+      split_reason = dplyr::first(split_reason),
+      fit_ok = dplyr::first(fit_ok),
+      fit_error = dplyr::first(fit_error),
+      predict_ok = dplyr::first(predict_ok),
+      predict_error = dplyr::first(predict_error),
+      fit_nonposdef_hessian = dplyr::first(fit_nonposdef_hessian),
+      fit_nonzero_convergence = dplyr::first(fit_nonzero_convergence),
+      fit_warning = dplyr::first(fit_warning),
+      n_pred = sum(!is.na(.pred)),
+      rmse = safe_rmse(sq_error),
+      mae = safe_mean(abs_error),
+      mean_bias = safe_mean(bias),
+      median_bias = safe_median(bias),
+      .groups = "drop"
+    )
+
+  # -----------------------------------------------------
+  # AOI-LEVEL VORHERSAGE
+  # -----------------------------------------------------
+
+  aoi_prediction_summary <- cv_preds %>%
+    dplyr::group_by(experiment, model_scope, heldout_topic, aggr_level, AOI) %>%
+    dplyr::summarise(
+      n_pred = sum(!is.na(.pred)),
+      rmse = safe_rmse(sq_error),
+      mae = safe_mean(abs_error),
+      mean_bias = safe_mean(bias),
+      median_bias = safe_median(bias),
+      .groups = "drop"
+    )
+
+  # -----------------------------------------------------
+  # DIREKTER AOI-VERGLEICH single vs aggregated vs all
+  # -----------------------------------------------------
+
+  aoi_comparison <- aoi_prediction_summary %>%
+    dplyr::select(experiment, model_scope, heldout_topic, aggr_level, AOI, rmse, mae, mean_bias, median_bias, n_pred) %>%
+    tidyr::pivot_wider(
+      names_from = model_scope,
+      values_from = c(rmse, mae, mean_bias, median_bias, n_pred),
+      names_sep = "__"
+    ) %>%
+    dplyr::left_join(cluster_sizes, by = "aggr_level") %>%
+    dplyr::mutate(
+      comparable_single_vs_aggregated =
+        !is.na(rmse__single) & !is.na(rmse__aggregated) &
+        !is.na(mae__single) & !is.na(mae__aggregated) &
+        !is.na(n_pred__single) & !is.na(n_pred__aggregated) &
+        n_pred__single > 0 & n_pred__aggregated > 0,
+
+      comparable_single_vs_all =
+        !is.na(rmse__single) & !is.na(rmse__all) &
+        !is.na(mae__single) & !is.na(mae__all) &
+        !is.na(n_pred__single) & !is.na(n_pred__all) &
+        n_pred__single > 0 & n_pred__all > 0,
+
+      comparable_aggregated_vs_all =
+        !is.na(rmse__aggregated) & !is.na(rmse__all) &
+        !is.na(mae__aggregated) & !is.na(mae__all) &
+        !is.na(n_pred__aggregated) & !is.na(n_pred__all) &
+        n_pred__aggregated > 0 & n_pred__all > 0,
+
+      delta_rmse_aggregated_minus_single = rmse__aggregated - rmse__single,
+      delta_rmse_all_minus_single = rmse__all - rmse__single,
+      delta_rmse_all_minus_aggregated = rmse__all - rmse__aggregated,
+
+      delta_mae_aggregated_minus_single = mae__aggregated - mae__single,
+      delta_mae_all_minus_single = mae__all - mae__single,
+      delta_mae_all_minus_aggregated = mae__all - mae__aggregated,
+
+      delta_mean_bias_aggregated_minus_single = mean_bias__aggregated - mean_bias__single,
+      delta_mean_bias_all_minus_single = mean_bias__all - mean_bias__single,
+      delta_mean_bias_all_minus_aggregated = mean_bias__all - mean_bias__aggregated,
+
+      delta_median_bias_aggregated_minus_single = median_bias__aggregated - median_bias__single,
+      delta_median_bias_all_minus_single = median_bias__all - median_bias__single,
+      delta_median_bias_all_minus_aggregated = median_bias__all - median_bias__aggregated
+    )
+
+  # -----------------------------------------------------
+  # FIT-PROBLEME PRO SCOPE
+  # -----------------------------------------------------
+
+  fit_problem_summary <- fit_level_summary %>%
+    dplyr::group_by(experiment, model_scope) %>%
+    dplyr::summarise(
+      n_fits_total = dplyr::n(),
+      n_valid_splits = sum(split_ok %in% TRUE, na.rm = TRUE),
+      n_invalid_splits = sum(split_ok %in% FALSE, na.rm = TRUE),
+      n_fit_ok = sum(fit_ok %in% TRUE, na.rm = TRUE),
+      n_fit_failed = sum(split_ok %in% TRUE & fit_ok %in% FALSE, na.rm = TRUE),
+      n_predict_ok = sum(predict_ok %in% TRUE, na.rm = TRUE),
+      n_predict_failed = sum(split_ok %in% TRUE & fit_ok %in% TRUE & predict_ok %in% FALSE, na.rm = TRUE),
+      n_nonposdef_hessian_fits = sum(fit_nonposdef_hessian %in% TRUE, na.rm = TRUE),
+      n_nonzero_convergence_fits = sum(fit_nonzero_convergence %in% TRUE, na.rm = TRUE),
+      n_warning_fits = sum(!is.na(fit_warning), na.rm = TRUE),
+      prop_invalid_splits = n_invalid_splits / n_fits_total,
+      prop_fit_failed = n_fit_failed / n_fits_total,
+      prop_predict_failed = n_predict_failed / n_fits_total,
+      prop_nonposdef_hessian = n_nonposdef_hessian_fits / n_fits_total,
+      prop_nonzero_convergence = n_nonzero_convergence_fits / n_fits_total,
+      prop_warning = n_warning_fits / n_fits_total,
+      rmse_overall = safe_rmse(cv_preds$sq_error[cv_preds$experiment == dplyr::first(experiment) &
+                                                   cv_preds$model_scope == dplyr::first(model_scope)]),
+      mae_overall = safe_mean(cv_preds$abs_error[cv_preds$experiment == dplyr::first(experiment) &
+                                                   cv_preds$model_scope == dplyr::first(model_scope)]),
+      mean_bias_overall = safe_mean(cv_preds$bias[cv_preds$experiment == dplyr::first(experiment) &
+                                                    cv_preds$model_scope == dplyr::first(model_scope)]),
+      median_bias_overall = safe_median(cv_preds$bias[cv_preds$experiment == dplyr::first(experiment) &
+                                                        cv_preds$model_scope == dplyr::first(model_scope)]),
+      .groups = "drop"
+    )
+
+  list(
+    cv_preds = cv_preds,
+    fit_level_summary = fit_level_summary,
+    aoi_prediction_summary = aoi_prediction_summary,
+    aoi_comparison = aoi_comparison,
+    fit_problem_summary = fit_problem_summary
+  )
+}
+
+# =========================================================
+# ÜBER ALLE EXPERIMENTE
+# =========================================================
+
+run_topic_cv_compare_all_gamma <- function(dfs,
+                                           response = "FRT",
+                                           experiments_with_speaker = c("n_bed", "n_ein", "CS"),
+                                           pred_re_form = NULL) {
+  nested <- purrr::imap(dfs, function(df, exp_name) {
+    run_topic_cv_compare_one_experiment_gamma(
+      df = df,
+      exp_name = exp_name,
+      response = response,
+      use_speaker = exp_name %in% experiments_with_speaker,
+      pred_re_form = pred_re_form
+    )
+  })
+
+  list(
+    nested = nested,
+    cv_preds_all = dplyr::bind_rows(purrr::map(nested, "cv_preds")),
+    fit_level_all = dplyr::bind_rows(purrr::map(nested, "fit_level_summary")),
+    aoi_prediction_summary_all = dplyr::bind_rows(purrr::map(nested, "aoi_prediction_summary")),
+    aoi_comparison_all = dplyr::bind_rows(purrr::map(nested, "aoi_comparison")),
+    fit_problem_summary_all = dplyr::bind_rows(purrr::map(nested, "fit_problem_summary"))
+  )
+}
+
+# =========================================================
+# AUSFÜHREN
+# pred_re_form = NULL:
+# bekannte Participant-RE werden genutzt,
+# neuer heldout Topic geht auf RE = 0
+# =========================================================
+
+res_topic_compare_gamma <- run_topic_cv_compare_all_gamma(
+  dfs = dfs,
+  response = "FRT",
+  experiments_with_speaker = experiments_with_speaker,
+  pred_re_form = NULL
+)
+
+# =========================================================
+# OUTPUTS
+# =========================================================
+
+# 1) AOI-spezifischer direkter Vergleich
+#round_df_4(res_topic_compare_gamma$aoi_comparison_all)
+
+# 2) AOI-spezifische RMSE / MAE / Bias je Modell und heldout Topic
+#round_df_4(res_topic_compare_gamma$aoi_prediction_summary_all)
+
+# 3) Fit-Probleme pro Modelltyp
+round_df_4(res_topic_compare_gamma$fit_problem_summary_all)
+
+# 4) Detailtabelle pro tatsächlichem Fit
+#round_df_4(res_topic_compare_gamma$fit_level_all)
+
+# 5) Rohvorhersagen
+# res_topic_compare_gamma$cv_preds_all
+
+win_equal_loss_by_model <- dplyr::bind_rows(
+  res_topic_compare_gamma$aoi_comparison_all %>%
+    dplyr::transmute(
+      model = "aggregated",
+      outcome = dplyr::case_when(
+        is.na(delta_rmse_aggregated_minus_single) ~ NA_character_,
+        delta_rmse_aggregated_minus_single < -1 ~ "win",
+        delta_rmse_aggregated_minus_single >  1 ~ "loss",
+        TRUE ~ "equal"
+      )
+    ),
+  res_topic_compare_gamma$aoi_comparison_all %>%
+    dplyr::transmute(
+      model = "single",
+      outcome = dplyr::case_when(
+        is.na(delta_rmse_aggregated_minus_single) ~ NA_character_,
+        delta_rmse_aggregated_minus_single < -1 ~ "loss",
+        delta_rmse_aggregated_minus_single >  1 ~ "win",
+        TRUE ~ "equal"
+      )
+    ),
+  res_topic_compare_gamma$aoi_comparison_all %>%
+    dplyr::transmute(
+      model = "all",
+      outcome = dplyr::case_when(
+        is.na(delta_rmse_all_minus_single) ~ NA_character_,
+        delta_rmse_all_minus_single < -1 ~ "win",
+        delta_rmse_all_minus_single >  1 ~ "loss",
+        TRUE ~ "equal"
+      )
+    ),
+  res_topic_compare_gamma$aoi_comparison_all %>%
+    dplyr::transmute(
+      model = "single",
+      outcome = dplyr::case_when(
+        is.na(delta_rmse_all_minus_single) ~ NA_character_,
+        delta_rmse_all_minus_single < -1 ~ "loss",
+        delta_rmse_all_minus_single >  1 ~ "win",
+        TRUE ~ "equal"
+      )
+    ),
+  res_topic_compare_gamma$aoi_comparison_all %>%
+    dplyr::transmute(
+      model = "all",
+      outcome = dplyr::case_when(
+        is.na(delta_rmse_all_minus_aggregated) ~ NA_character_,
+        delta_rmse_all_minus_aggregated < -1 ~ "win",
+        delta_rmse_all_minus_aggregated >  1 ~ "loss",
+        TRUE ~ "equal"
+      )
+    ),
+  res_topic_compare_gamma$aoi_comparison_all %>%
+    dplyr::transmute(
+      model = "aggregated",
+      outcome = dplyr::case_when(
+        is.na(delta_rmse_all_minus_aggregated) ~ NA_character_,
+        delta_rmse_all_minus_aggregated < -1 ~ "loss",
+        delta_rmse_all_minus_aggregated >  1 ~ "win",
+        TRUE ~ "equal"
+      )
+    )
+) %>%
+  dplyr::filter(!is.na(outcome)) %>%
+  dplyr::count(model, outcome) %>%
+  tidyr::pivot_wider(
+    names_from = outcome,
+    values_from = n,
+    values_fill = 0
+  ) %>%
+  dplyr::arrange(model)
+
+round_df_4(win_equal_loss_by_model)
+```
+Inhaltlich schneiden die single-Modelle insgesamt am schwächsten ab. Das zeigt sich sowohl in den höheren RMSE- und MAE-Werten in fast allen Experimenten als auch in der paarweisen Vergleichstabelle, in der single mit 61 Siegen, aber 120 Niederlagen deutlich zurückliegt. Dagegen liegen die Strategien aggregated und all sehr nah beieinander. Beide erzielen über die Experimente hinweg ähnliche Fehlermaße, wobei all in c_bed, n_bed und beim globalen Vergleich leicht günstiger wirkt, während aggregated in einzelnen Experimenten praktisch gleichauf liegt. Die direkte Gegenüberstellung bestätigt dieses Bild: aggregated und all haben fast gleich viele Gewinne und Verluste, während beide dem single-Ansatz klar überlegen sind.
+
+
+
+*FRT.WD vs FRT Gamma - Prädiktion auf Rohskala Vergleich*
+```{r}
+library(dplyr)
+library(tidyr)
+library(purrr)
+library(glmmTMB)
+library(lme4)
+
+# =========================================================
+# INPUT
+# =========================================================
+
+dfs <- list(
+  c_bed = c_bed,
+  c_ein = c_ein,
+  n_bed = n_bed,
+  n_ein = n_ein,
+  CS    = CS
+)
+
+experiments_with_speaker <- c("n_bed", "n_ein", "CS")
+
+# =========================================================
+# HELFER
+# =========================================================
+
+safe_plain_df <- function(df) {
+  out <- as.data.frame(df, stringsAsFactors = FALSE)
+  rownames(out) <- NULL
+  out
+}
+
+round_df_4 <- function(df) {
+  df %>%
+    mutate(across(where(is.numeric), ~ round(.x, 4)))
+}
+
+safe_mean <- function(x) {
+  x <- x[is.finite(x)]
+  if (length(x) == 0) return(NA_real_)
+  mean(x)
+}
+
+safe_rmse <- function(sq_error) {
+  sq_error <- sq_error[is.finite(sq_error)]
+  if (length(sq_error) == 0) return(NA_real_)
+  sqrt(mean(sq_error))
+}
+
+collapse_unique <- function(x) {
+  x <- unique(stats::na.omit(x))
+  if (length(x) == 0) return(NA_character_)
+  paste(x, collapse = " | ")
+}
+
+# =========================================================
+# LEERE TABELLEN
+# =========================================================
+
+empty_prediction_tbl <- function() {
+  tibble(
+    experiment = character(),
+    strategy = character(),
+    heldout_topic = character(),
+    aggr_level = character(),
+    AOI = character(),
+    n_aoi_in_cluster = integer(),
+    observed_FRT = numeric(),
+    pred_FRT = numeric(),
+    abs_error_FRT = numeric(),
+    sq_error_FRT = numeric()
+  )
+}
+
+empty_prediction_summary_tbl <- function() {
+  tibble(
+    experiment = character(),
+    strategy = character(),
+    AOI = character(),
+    aggr_level = character(),
+    n_aoi_in_cluster = integer(),
+    n_pred = integer(),
+    rmse_FRT = numeric(),
+    mae_FRT = numeric()
+  )
+}
+
+empty_prediction_comparison_tbl <- function() {
+  tibble(
+    experiment = character(),
+    AOI = character(),
+    aggr_level = character(),
+    n_aoi_in_cluster = integer(),
+    rmse_FRT__aggregated_raw = numeric(),
+    rmse_FRT__normalized_single = numeric(),
+    mae_FRT__aggregated_raw = numeric(),
+    mae_FRT__normalized_single = numeric(),
+    n_pred__aggregated_raw = integer(),
+    n_pred__normalized_single = integer(),
+    delta_rmse_FRT_agg_minus_norm = numeric(),
+    delta_mae_FRT_agg_minus_norm = numeric()
+  )
+}
+
+empty_global_tbl <- function() {
+  tibble(
+    experiment = character(),
+    strategy = character(),
+    n_aoi = integer(),
+    mean_rmse_FRT = numeric(),
+    median_rmse_FRT = numeric(),
+    mean_mae_FRT = numeric(),
+    median_mae_FRT = numeric()
+  )
+}
+
+# =========================================================
+# DATEN VORBEREITEN
+# Single-AOI-Cluster bleiben jetzt erhalten
+# =========================================================
+
+prep_head_to_head_data <- function(df,
+                                   response_raw = "FRT",
+                                   response_norm = "FRT.WD",
+                                   use_speaker = FALSE) {
+  needed <- c(
+    response_raw, response_norm, "nWords", "nLetters",
+    "Participant", "Topic", "condition", "AOI", "aggr_level"
+  )
+  if (use_speaker) needed <- c(needed, "speaker")
+
+  missing_cols <- setdiff(needed, names(df))
+  if (length(missing_cols) > 0) {
+    stop("Fehlende Variablen: ", paste(missing_cols, collapse = ", "))
+  }
+
+  out <- df %>%
+    filter(!is.na(.data[[response_raw]])) %>%
+    filter(!is.na(.data[[response_norm]])) %>%
+    filter(!is.na(nWords), !is.na(nLetters)) %>%
+    filter(.data[[response_raw]] > 0) %>%
+    filter(.data[[response_norm]] > 0) %>%
+    filter(nWords > 0) %>%
+    filter(!is.na(Participant), !is.na(Topic), !is.na(condition), !is.na(AOI), !is.na(aggr_level))
+
+  if (use_speaker) {
+    out <- out %>% filter(!is.na(speaker))
+  }
+
+  out <- out %>%
+    mutate(
+      Participant = factor(Participant),
+      Topic = factor(Topic),
+      condition = factor(condition),
+      AOI = factor(AOI),
+      aggr_level = factor(aggr_level)
+    )
+
+  if (use_speaker) {
+    out <- out %>% mutate(speaker = factor(speaker))
+  }
+
+  cluster_sizes <- out %>%
+    distinct(aggr_level, AOI) %>%
+    count(aggr_level, name = "n_aoi_in_cluster")
+
+  list(
+    data = safe_plain_df(out),
+    cluster_sizes = cluster_sizes
+  )
+}
+
+# =========================================================
+# FORMELN
+# =========================================================
+
+make_formula_norm_single <- function(response = "FRT.WD",
+                                     use_speaker = FALSE) {
+  rhs <- if (use_speaker) {
+    "condition * speaker + (1 | Topic) + (1 | Participant)"
+  } else {
+    "condition + (1 | Topic) + (1 | Participant)"
+  }
+  as.formula(paste(response, "~", rhs))
+}
+
+make_formula_raw_aggregated <- function(response = "FRT",
+                                        use_speaker = FALSE,
+                                        n_aoi_in_cluster = 1L) {
+  rhs <- if (n_aoi_in_cluster > 1) {
+    if (use_speaker) {
+      "AOI * condition * speaker + nLetters + (1 | Topic) + (1 | Participant)"
+    } else {
+      "AOI * condition + nLetters + (1 | Topic) + (1 | Participant)"
+    }
+  } else {
+    if (use_speaker) {
+      "condition * speaker + nLetters + (1 | Topic) + (1 | Participant)"
+    } else {
+      "condition + nLetters + (1 | Topic) + (1 | Participant)"
+    }
+  }
+
+  as.formula(paste(response, "~", rhs))
+}
+
+# =========================================================
+# SPLIT CHECKS
+# =========================================================
+
+check_split_norm_single <- function(train_df,
+                                    response = "FRT.WD",
+                                    use_speaker = FALSE) {
+  reasons <- character(0)
+
+  if (nrow(train_df) == 0) reasons <- c(reasons, "empty_train")
+  if (dplyr::n_distinct(train_df$condition) != 2) reasons <- c(reasons, "condition_not_binary_in_train")
+  if (use_speaker && dplyr::n_distinct(train_df$speaker) < 2) reasons <- c(reasons, "speaker_has_less_than_2_levels_in_train")
+  if (any(!is.finite(train_df[[response]]))) reasons <- c(reasons, "non_finite_response_in_train")
+  if (any(train_df[[response]] <= 0, na.rm = TRUE)) reasons <- c(reasons, "non_positive_response_in_train")
+
+  list(
+    ok = length(reasons) == 0,
+    reason = if (length(reasons) == 0) NA_character_ else paste(reasons, collapse = " | ")
+  )
+}
+
+check_split_raw_aggregated <- function(train_df,
+                                       response = "FRT",
+                                       use_speaker = FALSE,
+                                       n_aoi_in_cluster = 1L) {
+  reasons <- character(0)
+
+  if (nrow(train_df) == 0) reasons <- c(reasons, "empty_train")
+  if (n_aoi_in_cluster > 1 && dplyr::n_distinct(train_df$AOI) < 2) {
+    reasons <- c(reasons, "aoi_has_less_than_2_levels_in_train")
+  }
+  if (dplyr::n_distinct(train_df$condition) != 2) reasons <- c(reasons, "condition_not_binary_in_train")
+  if (use_speaker && dplyr::n_distinct(train_df$speaker) < 2) reasons <- c(reasons, "speaker_has_less_than_2_levels_in_train")
+  if (all(is.na(train_df$nLetters)) || dplyr::n_distinct(train_df$nLetters) < 2) reasons <- c(reasons, "nLetters_has_less_than_2_values_in_train")
+  if (any(!is.finite(train_df[[response]]))) reasons <- c(reasons, "non_finite_response_in_train")
+  if (any(train_df[[response]] <= 0, na.rm = TRUE)) reasons <- c(reasons, "non_positive_response_in_train")
+  if (any(!is.finite(train_df$nLetters))) reasons <- c(reasons, "non_finite_nLetters_in_train")
+
+  list(
+    ok = length(reasons) == 0,
+    reason = if (length(reasons) == 0) NA_character_ else paste(reasons, collapse = " | ")
+  )
+}
+
+# =========================================================
+# FIT
+# =========================================================
+
+fit_gamma_model <- function(df,
+                            formula,
+                            response_name) {
+  if (nrow(df) == 0) {
+    return(list(
+      fit_ok = FALSE,
+      fit = NULL,
+      fit_error = "empty_data",
+      fit_warning = NA_character_,
+      fit_nonposdef_hessian = NA,
+      fit_nonzero_convergence = NA
+    ))
+  }
+
+  if (any(df[[response_name]] <= 0, na.rm = TRUE)) {
+    return(list(
+      fit_ok = FALSE,
+      fit = NULL,
+      fit_error = "non_positive_response_in_data",
+      fit_warning = NA_character_,
+      fit_nonposdef_hessian = NA,
+      fit_nonzero_convergence = NA
+    ))
+  }
+
+  df_fit <- droplevels(df)
+
+  warns <- character(0)
+  msgs <- character(0)
+
+  fit <- withCallingHandlers(
+    tryCatch(
+      glmmTMB::glmmTMB(
+        formula = formula,
+        data = df_fit,
+        family = Gamma(link = "log")
+      ),
+      error = function(e) e
+    ),
+    warning = function(w) {
+      warns <<- c(warns, conditionMessage(w))
+      invokeRestart("muffleWarning")
+    },
+    message = function(m) {
+      msgs <<- c(msgs, conditionMessage(m))
+      invokeRestart("muffleMessage")
+    }
+  )
+
+  if (inherits(fit, "error")) {
+    return(list(
+      fit_ok = FALSE,
+      fit = NULL,
+      fit_error = conditionMessage(fit),
+      fit_warning = collapse_unique(c(warns, msgs)),
+      fit_nonposdef_hessian = NA,
+      fit_nonzero_convergence = NA
+    ))
+  }
+
+  fit_nonposdef_hessian <- tryCatch(
+    !isTRUE(fit$sdr$pdHess),
+    error = function(e) NA
+  )
+
+  fit_nonzero_convergence <- tryCatch(
+    {
+      conv <- fit$fit$convergence
+      if (is.null(conv)) NA else conv != 0
+    },
+    error = function(e) NA
+  )
+
+  list(
+    fit_ok = TRUE,
+    fit = fit,
+    fit_error = NA_character_,
+    fit_warning = collapse_unique(c(warns, msgs)),
+    fit_nonposdef_hessian = fit_nonposdef_hessian,
+    fit_nonzero_convergence = fit_nonzero_convergence
+  )
+}
+
+# =========================================================
+# EIN EXPERIMENT
+# Nur Accuracy auf Rohskala
+# =========================================================
+
+run_head_to_head_one_experiment_gamma <- function(df,
+                                                  exp_name,
+                                                  response_raw = "FRT",
+                                                  response_norm = "FRT.WD",
+                                                  use_speaker = FALSE) {
+  prep <- prep_head_to_head_data(
+    df = df,
+    response_raw = response_raw,
+    response_norm = response_norm,
+    use_speaker = use_speaker
+  )
+
+  dat <- prep$data
+  cluster_sizes <- prep$cluster_sizes
+
+  if (nrow(dat) == 0) {
+    return(list(
+      predictions_raw = empty_prediction_tbl(),
+      prediction_summary = empty_prediction_summary_tbl(),
+      prediction_comparison = empty_prediction_comparison_tbl(),
+      global_summary = empty_global_tbl()
+    ))
+  }
+
+  topics <- unique(as.character(dat$Topic))
+
+  # -----------------------------------------------------
+  # STRATEGIE A: Normierung, single AOI
+  # -----------------------------------------------------
+
+  norm_predictions <- purrr::map_dfr(topics, function(topic_i) {
+    test_topic_df <- dat %>% filter(as.character(Topic) == topic_i)
+    aois_in_test <- unique(as.character(test_topic_df$AOI))
+
+    purrr::map_dfr(aois_in_test, function(aoi_i) {
+      train_df <- dat %>%
+        filter(as.character(Topic) != topic_i,
+               as.character(AOI) == aoi_i)
+
+      test_df <- dat %>%
+        filter(as.character(Topic) == topic_i,
+               as.character(AOI) == aoi_i)
+
+      split_check <- check_split_norm_single(
+        train_df = train_df,
+        response = response_norm,
+        use_speaker = use_speaker
+      )
+
+      if (!split_check$ok) {
+        return(
+          tibble(
+            experiment = exp_name,
+            strategy = "normalized_single",
+            heldout_topic = topic_i,
+            aggr_level = unique(as.character(test_df$aggr_level))[1],
+            AOI = aoi_i,
+            n_aoi_in_cluster = cluster_sizes$n_aoi_in_cluster[
+              match(unique(as.character(test_df$aggr_level))[1], cluster_sizes$aggr_level)
+            ],
+            observed_FRT = test_df[[response_raw]],
+            pred_FRT = NA_real_,
+            abs_error_FRT = NA_real_,
+            sq_error_FRT = NA_real_
+          )
+        )
+      }
+
+      fit_out <- fit_gamma_model(
+        df = train_df,
+        formula = make_formula_norm_single(
+          response = response_norm,
+          use_speaker = use_speaker
+        ),
+        response_name = response_norm
+      )
+
+      pred_wd <- if (fit_out$fit_ok) {
+        tryCatch(
+          predict(
+            fit_out$fit,
+            newdata = test_df,
+            type = "response",
+            re.form = NULL,
+            allow.new.levels = TRUE
+          ),
+          error = function(e) rep(NA_real_, nrow(test_df))
+        )
+      } else {
+        rep(NA_real_, nrow(test_df))
+      }
+
+      pred_raw <- as.numeric(pred_wd) * test_df$nWords
+
+      tibble(
+        experiment = exp_name,
+        strategy = "normalized_single",
+        heldout_topic = topic_i,
+        aggr_level = unique(as.character(test_df$aggr_level))[1],
+        AOI = aoi_i,
+        n_aoi_in_cluster = cluster_sizes$n_aoi_in_cluster[
+          match(unique(as.character(test_df$aggr_level))[1], cluster_sizes$aggr_level)
+        ],
+        observed_FRT = test_df[[response_raw]],
+        pred_FRT = pred_raw,
+        abs_error_FRT = abs(test_df[[response_raw]] - pred_raw),
+        sq_error_FRT = (test_df[[response_raw]] - pred_raw)^2
+      )
+    })
+  })
+
+  # -----------------------------------------------------
+  # STRATEGIE B: Aggregierte Rohzeit
+  # Jetzt auch für Single-AOI-Cluster
+  # Bei Single-AOI-Clustern ohne AOI-Term
+  # -----------------------------------------------------
+
+  agg_predictions <- purrr::map_dfr(topics, function(topic_i) {
+    test_topic_df <- dat %>% filter(as.character(Topic) == topic_i)
+    groups_in_test <- unique(as.character(test_topic_df$aggr_level))
+
+    purrr::map_dfr(groups_in_test, function(group_i) {
+      train_df <- dat %>%
+        filter(as.character(Topic) != topic_i,
+               as.character(aggr_level) == group_i)
+
+      test_df <- dat %>%
+        filter(as.character(Topic) == topic_i,
+               as.character(aggr_level) == group_i)
+
+      n_aoi_cluster <- cluster_sizes$n_aoi_in_cluster[
+        match(group_i, cluster_sizes$aggr_level)
+      ]
+
+      split_check <- check_split_raw_aggregated(
+        train_df = train_df,
+        response = response_raw,
+        use_speaker = use_speaker,
+        n_aoi_in_cluster = n_aoi_cluster
+      )
+
+      if (!split_check$ok) {
+        return(
+          tibble(
+            experiment = exp_name,
+            strategy = "aggregated_raw",
+            heldout_topic = topic_i,
+            aggr_level = group_i,
+            AOI = as.character(test_df$AOI),
+            n_aoi_in_cluster = n_aoi_cluster,
+            observed_FRT = test_df[[response_raw]],
+            pred_FRT = NA_real_,
+            abs_error_FRT = NA_real_,
+            sq_error_FRT = NA_real_
+          )
+        )
+      }
+
+      fit_out <- fit_gamma_model(
+        df = train_df,
+        formula = make_formula_raw_aggregated(
+          response = response_raw,
+          use_speaker = use_speaker,
+          n_aoi_in_cluster = n_aoi_cluster
+        ),
+        response_name = response_raw
+      )
+
+      pred_raw <- if (fit_out$fit_ok) {
+        tryCatch(
+          predict(
+            fit_out$fit,
+            newdata = test_df,
+            type = "response",
+            re.form = NULL,
+            allow.new.levels = TRUE
+          ),
+          error = function(e) rep(NA_real_, nrow(test_df))
+        )
+      } else {
+        rep(NA_real_, nrow(test_df))
+      }
+
+      tibble(
+        experiment = exp_name,
+        strategy = "aggregated_raw",
+        heldout_topic = topic_i,
+        aggr_level = group_i,
+        AOI = as.character(test_df$AOI),
+        n_aoi_in_cluster = n_aoi_cluster,
+        observed_FRT = test_df[[response_raw]],
+        pred_FRT = as.numeric(pred_raw),
+        abs_error_FRT = abs(test_df[[response_raw]] - as.numeric(pred_raw)),
+        sq_error_FRT = (test_df[[response_raw]] - as.numeric(pred_raw))^2
+      )
+    })
+  })
+
+  all_preds <- bind_rows(norm_predictions, agg_predictions)
+
+  # -----------------------------------------------------
+  # Accuracy-Zusammenfassung auf Rohskala
+  # -----------------------------------------------------
+
+  prediction_summary <- all_preds %>%
+    group_by(experiment, strategy, AOI, aggr_level, n_aoi_in_cluster) %>%
+    summarise(
+      n_pred = sum(!is.na(pred_FRT)),
+      rmse_FRT = safe_rmse(sq_error_FRT),
+      mae_FRT = safe_mean(abs_error_FRT),
+      .groups = "drop"
+    )
+
+  prediction_comparison <- prediction_summary %>%
+    select(
+      experiment,
+      AOI,
+      aggr_level,
+      n_aoi_in_cluster,
+      strategy,
+      n_pred,
+      rmse_FRT,
+      mae_FRT
+    ) %>%
+    pivot_wider(
+      names_from = strategy,
+      values_from = c(n_pred, rmse_FRT, mae_FRT),
+      names_sep = "__"
+    ) %>%
+    mutate(
+      delta_rmse_FRT_agg_minus_norm =
+        rmse_FRT__aggregated_raw - rmse_FRT__normalized_single,
+      delta_mae_FRT_agg_minus_norm =
+        mae_FRT__aggregated_raw - mae_FRT__normalized_single
+    ) %>%
+    filter(
+      !is.na(n_pred__aggregated_raw),
+      !is.na(n_pred__normalized_single)
+    )
+
+  global_summary <- prediction_summary %>%
+    group_by(experiment, strategy) %>%
+    summarise(
+      n_aoi = dplyr::n(),
+      mean_rmse_FRT = safe_mean(rmse_FRT),
+      median_rmse_FRT = median(rmse_FRT, na.rm = TRUE),
+      mean_mae_FRT = safe_mean(mae_FRT),
+      median_mae_FRT = median(mae_FRT, na.rm = TRUE),
+      .groups = "drop"
+    )
+
+  list(
+    predictions_raw = all_preds,
+    prediction_summary = prediction_summary,
+    prediction_comparison = prediction_comparison,
+    global_summary = global_summary
+  )
+}
+
+# =========================================================
+# ÜBER ALLE EXPERIMENTE
+# =========================================================
+
+run_head_to_head_all_gamma <- function(dfs,
+                                       response_raw = "FRT",
+                                       response_norm = "FRT.WD",
+                                       experiments_with_speaker = c("n_bed", "n_ein", "CS")) {
+  nested <- purrr::imap(dfs, function(df, exp_name) {
+    run_head_to_head_one_experiment_gamma(
+      df = df,
+      exp_name = exp_name,
+      response_raw = response_raw,
+      response_norm = response_norm,
+      use_speaker = exp_name %in% experiments_with_speaker
+    )
+  })
+
+  list(
+    nested = nested,
+    predictions_raw_all = bind_rows(purrr::map(nested, "predictions_raw")),
+    prediction_summary_all = bind_rows(purrr::map(nested, "prediction_summary")),
+    prediction_comparison_all = bind_rows(purrr::map(nested, "prediction_comparison")),
+    global_summary_all = bind_rows(purrr::map(nested, "global_summary"))
+  )
+}
+
+# =========================================================
+# AUSFÜHREN
+# =========================================================
+
+res_head_to_head_gamma <- run_head_to_head_all_gamma(
+  dfs = dfs,
+  response_raw = "FRT",
+  response_norm = "FRT.WD",
+  experiments_with_speaker = experiments_with_speaker
+)
+
+# =========================================================
+# OUTPUTS
+# =========================================================
+
+#round_df_4(res_head_to_head_gamma$prediction_summary_all)
+round_df_4(res_head_to_head_gamma$prediction_comparison_all)
+round_df_4(res_head_to_head_gamma$global_summary_all)
+```
+
+Methodisch wurden zwei Gamma-Mischmodelle in einem Topic-Leave-One-Out-Design anhand ihrer Vorhersagegenauigkeit auf der Rohskala von FRT verglichen. Die erste Strategie modelliert normierte Einzel-AOI-Werte und transformiert die Vorhersagen anschließend über die jeweilige Wortanzahl zurück auf die Rohskala. Die zweite Strategie modelliert die Rohzeiten direkt auf Cluster-Ebene. Für Cluster mit mehr als einer AOI wurde dabei ein aggregiertes Modell mit AOI-Effekt und AOI-Interaktion verwendet, während für Cluster mit nur einer AOI der AOI-Term aus dem Modell entfernt wurde. Die Modellgüte wurde ausschließlich über RMSE und MAE auf der gemeinsamen Rohskala beurteilt, sodass kleinere Werte jeweils eine höhere Vorhersagegenauigkeit anzeigen.
+Die Vorhersagen sind AOI spezifisch. 
+
+Inhaltlich ergibt sich kein einheitliches Gesamtbild. Für c_bed und CS zeigt die normierte Strategie im Mittel die geringeren Vorhersagefehler, für n_bed dagegen die aggregierte Rohzeitstrategie. Für c_ein und n_ein fallen die Unterschiede insgesamt eher klein aus. Ein klarer systematischer Zusammenhang mit der Clustergröße ist dabei nicht erkennbar. Insgesamt spricht der Vergleich daher gegen eine generelle Überlegenheit einer der beiden Strategien. Stattdessen hängt die günstigere Modellierung offenbar vom jeweiligen Experiment ab.
+
+
+
+
+*Condition Stabilität über Topic LOO FRT.WD vs FRT im Gamma mit log link*
+```{r}
+library(dplyr)
+library(tidyr)
+library(purrr)
+library(glmmTMB)
+
+# =========================================================
+# INPUT
+# =========================================================
+
+dfs <- list(
+  c_bed = c_bed,
+  c_ein = c_ein,
+  n_bed = n_bed,
+  n_ein = n_ein,
+  CS    = CS
+)
+
+experiments_with_speaker <- c("n_bed", "n_ein", "CS")
+
+# =========================================================
+# HELFER
+# =========================================================
+
+safe_plain_df <- function(df) {
+  out <- as.data.frame(df, stringsAsFactors = FALSE)
+  rownames(out) <- NULL
+  out
+}
+
+round_df_4 <- function(df) {
+  df %>%
+    dplyr::mutate(across(where(is.numeric), ~ round(.x, 4)))
+}
+
+safe_mean <- function(x) {
+  x <- x[is.finite(x)]
+  if (length(x) == 0) return(NA_real_)
+  mean(x)
+}
+
+safe_sd <- function(x) {
+  x <- x[is.finite(x)]
+  if (length(x) <= 1) return(NA_real_)
+  sd(x)
+}
+
+collapse_unique <- function(x) {
+  x <- unique(stats::na.omit(x))
+  if (length(x) == 0) return(NA_character_)
+  paste(x, collapse = " | ")
+}
+
+# =========================================================
+# LEERE TABELLEN
+# =========================================================
+
+empty_contrast_tbl <- function() {
+  tibble(
+    experiment = character(),
+    strategy = character(),
+    heldout_topic = character(),
+    aggr_level = character(),
+    AOI = character(),
+    n_aoi_in_cluster = integer(),
+    n_train = integer(),
+    n_test = integer(),
+    fit_ok = logical(),
+    fit_error = character(),
+    fit_warning = character(),
+    fit_nonposdef_hessian = logical(),
+    fit_nonzero_convergence = logical(),
+    contrast_ok = logical(),
+    contrast_reason = character(),
+    cond_ref = character(),
+    cond_alt = character(),
+    mean_pred_ref_FRT = numeric(),
+    mean_pred_alt_FRT = numeric(),
+    log_ratio_FRT = numeric()
+  )
+}
+
+empty_contrast_summary_tbl <- function() {
+  tibble(
+    experiment = character(),
+    strategy = character(),
+    AOI = character(),
+    aggr_level = character(),
+    n_aoi_in_cluster = integer(),
+    n_topic_splits = integer(),
+    mean_log_ratio_FRT = numeric(),
+    sd_log_ratio_FRT = numeric(),
+    n_log_ratio_positive = integer(),
+    n_log_ratio_negative = integer(),
+    log_ratio_sign_switch = integer()
+  )
+}
+
+empty_contrast_comparison_tbl <- function() {
+  tibble(
+    experiment = character(),
+    AOI = character(),
+    aggr_level = character(),
+    n_aoi_in_cluster = integer(),
+    n_topic_splits__aggregated_raw = integer(),
+    n_topic_splits__normalized_single = integer(),
+    mean_log_ratio_FRT__aggregated_raw = numeric(),
+    mean_log_ratio_FRT__normalized_single = numeric(),
+    sd_log_ratio_FRT__aggregated_raw = numeric(),
+    sd_log_ratio_FRT__normalized_single = numeric(),
+    log_ratio_sign_switch__aggregated_raw = integer(),
+    log_ratio_sign_switch__normalized_single = integer(),
+    delta_sd_log_ratio_FRT_agg_minus_norm = numeric()
+  )
+}
+
+# =========================================================
+# DATEN VORBEREITEN
+# =========================================================
+
+prep_head_to_head_data <- function(df,
+                                   response_raw = "FRT",
+                                   response_norm = "FRT.WD",
+                                   use_speaker = FALSE) {
+  needed <- c(
+    response_raw, response_norm, "nWords", "nLetters",
+    "Participant", "Topic", "condition", "AOI", "aggr_level"
+  )
+  if (use_speaker) needed <- c(needed, "speaker")
+
+  missing_cols <- setdiff(needed, names(df))
+  if (length(missing_cols) > 0) {
+    stop("Fehlende Variablen: ", paste(missing_cols, collapse = ", "))
+  }
+
+  out <- df %>%
+    dplyr::filter(!is.na(.data[[response_raw]])) %>%
+    dplyr::filter(!is.na(.data[[response_norm]])) %>%
+    dplyr::filter(!is.na(nWords), !is.na(nLetters)) %>%
+    dplyr::filter(.data[[response_raw]] > 0) %>%
+    dplyr::filter(.data[[response_norm]] > 0) %>%
+    dplyr::filter(nWords > 0) %>%
+    dplyr::filter(!is.na(Participant), !is.na(Topic), !is.na(condition), !is.na(AOI), !is.na(aggr_level))
+
+  if (use_speaker) {
+    out <- out %>% dplyr::filter(!is.na(speaker))
+  }
+
+  out <- out %>%
+    dplyr::mutate(
+      Participant = factor(Participant),
+      Topic = factor(Topic),
+      condition = factor(condition),
+      AOI = factor(AOI),
+      aggr_level = factor(aggr_level)
+    )
+
+  if (use_speaker) {
+    out <- out %>% dplyr::mutate(speaker = factor(speaker))
+  }
+
+  cluster_sizes <- out %>%
+    dplyr::distinct(aggr_level, AOI) %>%
+    dplyr::count(aggr_level, name = "n_aoi_in_cluster")
+
+  out <- out %>%
+    dplyr::left_join(cluster_sizes, by = "aggr_level")
+
+  list(
+    data = safe_plain_df(out),
+    cluster_sizes = cluster_sizes
+  )
+}
+
+# =========================================================
+# FORMELN
+# =========================================================
+
+make_formula_norm_single <- function(response = "FRT.WD",
+                                     use_speaker = FALSE) {
+  rhs <- if (use_speaker) {
+    "condition * speaker + (1 | Topic) + (1 | Participant)"
+  } else {
+    "condition + (1 | Topic) + (1 | Participant)"
+  }
+
+  as.formula(paste(response, "~", rhs))
+}
+
+make_formula_raw_aggregated <- function(response = "FRT",
+                                        use_speaker = FALSE,
+                                        n_aoi_in_cluster = 1L) {
+  rhs <- if (n_aoi_in_cluster > 1) {
+    if (use_speaker) {
+      "AOI * condition * speaker + nLetters + (1 | Topic) + (1 | Participant)"
+    } else {
+      "AOI * condition + nLetters + (1 | Topic) + (1 | Participant)"
+    }
+  } else {
+    if (use_speaker) {
+      "condition * speaker + nLetters + (1 | Topic) + (1 | Participant)"
+    } else {
+      "condition + nLetters + (1 | Topic) + (1 | Participant)"
+    }
+  }
+
+  as.formula(paste(response, "~", rhs))
+}
+
+# =========================================================
+# SPLIT CHECKS
+# =========================================================
+
+check_split_norm_single <- function(train_df,
+                                    response = "FRT.WD",
+                                    use_speaker = FALSE) {
+  reasons <- character(0)
+
+  if (nrow(train_df) == 0) reasons <- c(reasons, "empty_train")
+  if (dplyr::n_distinct(train_df$condition) != 2) reasons <- c(reasons, "condition_not_binary_in_train")
+  if (use_speaker && dplyr::n_distinct(train_df$speaker) < 2) reasons <- c(reasons, "speaker_has_less_than_2_levels_in_train")
+  if (any(!is.finite(train_df[[response]]))) reasons <- c(reasons, "non_finite_response_in_train")
+  if (any(train_df[[response]] <= 0, na.rm = TRUE)) reasons <- c(reasons, "non_positive_response_in_train")
+
+  list(
+    ok = length(reasons) == 0,
+    reason = if (length(reasons) == 0) NA_character_ else paste(reasons, collapse = " | ")
+  )
+}
+
+check_split_raw_aggregated <- function(train_df,
+                                       response = "FRT",
+                                       use_speaker = FALSE,
+                                       n_aoi_in_cluster = 1L) {
+  reasons <- character(0)
+
+  if (nrow(train_df) == 0) reasons <- c(reasons, "empty_train")
+  if (dplyr::n_distinct(train_df$condition) != 2) reasons <- c(reasons, "condition_not_binary_in_train")
+  if (use_speaker && dplyr::n_distinct(train_df$speaker) < 2) reasons <- c(reasons, "speaker_has_less_than_2_levels_in_train")
+  if (n_aoi_in_cluster > 1 && dplyr::n_distinct(train_df$AOI) < 2) reasons <- c(reasons, "aoi_has_less_than_2_levels_in_train")
+  if (all(is.na(train_df$nLetters)) || dplyr::n_distinct(train_df$nLetters) < 2) reasons <- c(reasons, "nLetters_has_less_than_2_values_in_train")
+  if (any(!is.finite(train_df[[response]]))) reasons <- c(reasons, "non_finite_response_in_train")
+  if (any(train_df[[response]] <= 0, na.rm = TRUE)) reasons <- c(reasons, "non_positive_response_in_train")
+  if (any(!is.finite(train_df$nLetters))) reasons <- c(reasons, "non_finite_nLetters_in_train")
+
+  list(
+    ok = length(reasons) == 0,
+    reason = if (length(reasons) == 0) NA_character_ else paste(reasons, collapse = " | ")
+  )
+}
+
+# =========================================================
+# FIT
+# =========================================================
+
+fit_gamma_model <- function(df,
+                            formula,
+                            response_name) {
+  if (nrow(df) == 0) {
+    return(list(
+      fit_ok = FALSE,
+      fit = NULL,
+      fit_error = "empty_data",
+      fit_warning = NA_character_,
+      fit_nonposdef_hessian = NA,
+      fit_nonzero_convergence = NA
+    ))
+  }
+
+  if (any(df[[response_name]] <= 0, na.rm = TRUE)) {
+    return(list(
+      fit_ok = FALSE,
+      fit = NULL,
+      fit_error = "non_positive_response_in_data",
+      fit_warning = NA_character_,
+      fit_nonposdef_hessian = NA,
+      fit_nonzero_convergence = NA
+    ))
+  }
+
+  df_fit <- droplevels(df)
+
+  warns <- character(0)
+  msgs <- character(0)
+
+  fit <- withCallingHandlers(
+    tryCatch(
+      glmmTMB::glmmTMB(
+        formula = formula,
+        data = df_fit,
+        family = Gamma(link = "log")
+      ),
+      error = function(e) e
+    ),
+    warning = function(w) {
+      warns <<- c(warns, conditionMessage(w))
+      invokeRestart("muffleWarning")
+    },
+    message = function(m) {
+      msgs <<- c(msgs, conditionMessage(m))
+      invokeRestart("muffleMessage")
+    }
+  )
+
+  if (inherits(fit, "error")) {
+    return(list(
+      fit_ok = FALSE,
+      fit = NULL,
+      fit_error = conditionMessage(fit),
+      fit_warning = collapse_unique(c(warns, msgs)),
+      fit_nonposdef_hessian = NA,
+      fit_nonzero_convergence = NA
+    ))
+  }
+
+  fit_nonposdef_hessian <- tryCatch(
+    !isTRUE(fit$sdr$pdHess),
+    error = function(e) NA
+  )
+
+  fit_nonzero_convergence <- tryCatch(
+    {
+      conv <- fit$fit$convergence
+      if (is.null(conv)) NA else conv != 0
+    },
+    error = function(e) NA
+  )
+
+  list(
+    fit_ok = TRUE,
+    fit = fit,
+    fit_error = NA_character_,
+    fit_warning = collapse_unique(c(warns, msgs)),
+    fit_nonposdef_hessian = fit_nonposdef_hessian,
+    fit_nonzero_convergence = fit_nonzero_convergence
+  )
+}
+
+# =========================================================
+# CONDITION-KONTRAST AUF FRT-SKALA
+# =========================================================
+
+make_condition_contrast_on_FRT_scale <- function(fit_obj,
+                                                 test_df_aoi,
+                                                 strategy = c("normalized_single", "aggregated_raw")) {
+  strategy <- match.arg(strategy)
+
+  if (is.null(fit_obj)) {
+    return(tibble(
+      contrast_ok = FALSE,
+      contrast_reason = "fit_is_null",
+      cond_ref = NA_character_,
+      cond_alt = NA_character_,
+      mean_pred_ref_FRT = NA_real_,
+      mean_pred_alt_FRT = NA_real_,
+      log_ratio_FRT = NA_real_
+    ))
+  }
+
+  cond_levels <- levels(droplevels(test_df_aoi$condition))
+  if (length(cond_levels) != 2) {
+    return(tibble(
+      contrast_ok = FALSE,
+      contrast_reason = "condition_not_binary_in_test",
+      cond_ref = NA_character_,
+      cond_alt = NA_character_,
+      mean_pred_ref_FRT = NA_real_,
+      mean_pred_alt_FRT = NA_real_,
+      log_ratio_FRT = NA_real_
+    ))
+  }
+
+  cond_ref <- cond_levels[1]
+  cond_alt <- cond_levels[2]
+
+  new_ref <- test_df_aoi
+  new_alt <- test_df_aoi
+
+  new_ref$condition <- factor(cond_ref, levels = levels(test_df_aoi$condition))
+  new_alt$condition <- factor(cond_alt, levels = levels(test_df_aoi$condition))
+
+  pred_ref <- tryCatch(
+    predict(
+      fit_obj,
+      newdata = new_ref,
+      type = "response",
+      re.form = NULL,
+      allow.new.levels = TRUE
+    ),
+    error = function(e) e
+  )
+
+  pred_alt <- tryCatch(
+    predict(
+      fit_obj,
+      newdata = new_alt,
+      type = "response",
+      re.form = NULL,
+      allow.new.levels = TRUE
+    ),
+    error = function(e) e
+  )
+
+  if (inherits(pred_ref, "error") || inherits(pred_alt, "error")) {
+    return(tibble(
+      contrast_ok = FALSE,
+      contrast_reason = "prediction_failed",
+      cond_ref = cond_ref,
+      cond_alt = cond_alt,
+      mean_pred_ref_FRT = NA_real_,
+      mean_pred_alt_FRT = NA_real_,
+      log_ratio_FRT = NA_real_
+    ))
+  }
+
+  pred_ref <- as.numeric(pred_ref)
+  pred_alt <- as.numeric(pred_alt)
+
+  if (strategy == "normalized_single") {
+    pred_ref <- pred_ref * test_df_aoi$nWords
+    pred_alt <- pred_alt * test_df_aoi$nWords
+  }
+
+  mean_ref <- safe_mean(pred_ref)
+  mean_alt <- safe_mean(pred_alt)
+
+  if (!is.finite(mean_ref) || !is.finite(mean_alt) || mean_ref <= 0 || mean_alt <= 0) {
+    return(tibble(
+      contrast_ok = FALSE,
+      contrast_reason = "non_positive_or_non_finite_mean_prediction",
+      cond_ref = cond_ref,
+      cond_alt = cond_alt,
+      mean_pred_ref_FRT = mean_ref,
+      mean_pred_alt_FRT = mean_alt,
+      log_ratio_FRT = NA_real_
+    ))
+  }
+
+  tibble(
+    contrast_ok = TRUE,
+    contrast_reason = NA_character_,
+    cond_ref = cond_ref,
+    cond_alt = cond_alt,
+    mean_pred_ref_FRT = mean_ref,
+    mean_pred_alt_FRT = mean_alt,
+    log_ratio_FRT = log(mean_alt / mean_ref)
+  )
+}
+
+# =========================================================
+# EIN EXPERIMENT
+# =========================================================
+
+run_head_to_head_one_experiment_gamma <- function(df,
+                                                  exp_name,
+                                                  response_raw = "FRT",
+                                                  response_norm = "FRT.WD",
+                                                  use_speaker = FALSE) {
+  prep <- prep_head_to_head_data(
+    df = df,
+    response_raw = response_raw,
+    response_norm = response_norm,
+    use_speaker = use_speaker
+  )
+
+  dat <- prep$data
+
+  if (nrow(dat) == 0) {
+    return(list(
+      contrasts_raw = empty_contrast_tbl(),
+      contrast_summary = empty_contrast_summary_tbl(),
+      contrast_comparison = empty_contrast_comparison_tbl()
+    ))
+  }
+
+  topics <- unique(as.character(dat$Topic))
+
+  # -----------------------------------------------------
+  # STRATEGIE A: Normierung, single AOI
+  # -----------------------------------------------------
+
+  norm_contrasts <- purrr::map_dfr(topics, function(topic_i) {
+    test_topic_df <- dat %>% dplyr::filter(as.character(Topic) == topic_i)
+    aois_in_test <- unique(as.character(test_topic_df$AOI))
+
+    purrr::map_dfr(aois_in_test, function(aoi_i) {
+      train_df <- dat %>%
+        dplyr::filter(as.character(Topic) != topic_i,
+                      as.character(AOI) == aoi_i)
+
+      test_df <- dat %>%
+        dplyr::filter(as.character(Topic) == topic_i,
+                      as.character(AOI) == aoi_i)
+
+      split_check <- check_split_norm_single(
+        train_df = train_df,
+        response = response_norm,
+        use_speaker = use_speaker
+      )
+
+      fit_out <- if (split_check$ok) {
+        fit_gamma_model(
+          df = train_df,
+          formula = make_formula_norm_single(
+            response = response_norm,
+            use_speaker = use_speaker
+          ),
+          response_name = response_norm
+        )
+      } else {
+        list(
+          fit_ok = FALSE,
+          fit = NULL,
+          fit_error = "invalid_split",
+          fit_warning = NA_character_,
+          fit_nonposdef_hessian = NA,
+          fit_nonzero_convergence = NA
+        )
+      }
+
+      contrast_out <- if (fit_out$fit_ok) {
+        make_condition_contrast_on_FRT_scale(
+          fit_obj = fit_out$fit,
+          test_df_aoi = test_df,
+          strategy = "normalized_single"
+        )
+      } else {
+        tibble(
+          contrast_ok = FALSE,
+          contrast_reason = if (split_check$ok) "fit_failed" else split_check$reason,
+          cond_ref = NA_character_,
+          cond_alt = NA_character_,
+          mean_pred_ref_FRT = NA_real_,
+          mean_pred_alt_FRT = NA_real_,
+          log_ratio_FRT = NA_real_
+        )
+      }
+
+      tibble(
+        experiment = exp_name,
+        strategy = "normalized_single",
+        heldout_topic = topic_i,
+        aggr_level = unique(as.character(test_df$aggr_level))[1],
+        AOI = aoi_i,
+        n_aoi_in_cluster = unique(test_df$n_aoi_in_cluster)[1],
+        n_train = nrow(train_df),
+        n_test = nrow(test_df),
+        fit_ok = fit_out$fit_ok,
+        fit_error = if (split_check$ok) fit_out$fit_error else "invalid_split",
+        fit_warning = fit_out$fit_warning,
+        fit_nonposdef_hessian = fit_out$fit_nonposdef_hessian,
+        fit_nonzero_convergence = fit_out$fit_nonzero_convergence
+      ) %>%
+        dplyr::bind_cols(contrast_out)
+    })
+  })
+
+  # -----------------------------------------------------
+  # STRATEGIE B: Aggregierte Rohzeit
+  # -----------------------------------------------------
+
+  agg_contrasts <- purrr::map_dfr(topics, function(topic_i) {
+    test_topic_df <- dat %>% dplyr::filter(as.character(Topic) == topic_i)
+    groups_in_test <- unique(as.character(test_topic_df$aggr_level))
+
+    purrr::map_dfr(groups_in_test, function(group_i) {
+      train_df <- dat %>%
+        dplyr::filter(as.character(Topic) != topic_i,
+                      as.character(aggr_level) == group_i)
+
+      test_group_df <- test_topic_df %>%
+        dplyr::filter(as.character(aggr_level) == group_i)
+
+      n_aoi_in_cluster_i <- unique(test_group_df$n_aoi_in_cluster)[1]
+
+      split_check <- check_split_raw_aggregated(
+        train_df = train_df,
+        response = response_raw,
+        use_speaker = use_speaker,
+        n_aoi_in_cluster = n_aoi_in_cluster_i
+      )
+
+      fit_out <- if (split_check$ok) {
+        fit_gamma_model(
+          df = train_df,
+          formula = make_formula_raw_aggregated(
+            response = response_raw,
+            use_speaker = use_speaker,
+            n_aoi_in_cluster = n_aoi_in_cluster_i
+          ),
+          response_name = response_raw
+        )
+      } else {
+        list(
+          fit_ok = FALSE,
+          fit = NULL,
+          fit_error = "invalid_split",
+          fit_warning = NA_character_,
+          fit_nonposdef_hessian = NA,
+          fit_nonzero_convergence = NA
+        )
+      }
+
+      aois_in_group <- unique(as.character(test_group_df$AOI))
+
+      purrr::map_dfr(aois_in_group, function(aoi_i) {
+        test_df_aoi <- test_group_df %>%
+          dplyr::filter(as.character(AOI) == aoi_i)
+
+        contrast_out <- if (fit_out$fit_ok) {
+          make_condition_contrast_on_FRT_scale(
+            fit_obj = fit_out$fit,
+            test_df_aoi = test_df_aoi,
+            strategy = "aggregated_raw"
+          )
+        } else {
+          tibble(
+            contrast_ok = FALSE,
+            contrast_reason = if (split_check$ok) "fit_failed" else split_check$reason,
+            cond_ref = NA_character_,
+            cond_alt = NA_character_,
+            mean_pred_ref_FRT = NA_real_,
+            mean_pred_alt_FRT = NA_real_,
+            log_ratio_FRT = NA_real_
+          )
+        }
+
+        tibble(
+          experiment = exp_name,
+          strategy = "aggregated_raw",
+          heldout_topic = topic_i,
+          aggr_level = group_i,
+          AOI = aoi_i,
+          n_aoi_in_cluster = n_aoi_in_cluster_i,
+          n_train = nrow(train_df),
+          n_test = nrow(test_df_aoi),
+          fit_ok = fit_out$fit_ok,
+          fit_error = if (split_check$ok) fit_out$fit_error else "invalid_split",
+          fit_warning = fit_out$fit_warning,
+          fit_nonposdef_hessian = fit_out$fit_nonposdef_hessian,
+          fit_nonzero_convergence = fit_out$fit_nonzero_convergence
+        ) %>%
+          dplyr::bind_cols(contrast_out)
+      })
+    })
+  })
+
+  all_contrasts <- dplyr::bind_rows(norm_contrasts, agg_contrasts)
+
+  contrast_summary <- all_contrasts %>%
+    dplyr::group_by(experiment, strategy, AOI, aggr_level, n_aoi_in_cluster) %>%
+    dplyr::summarise(
+      n_topic_splits = sum(contrast_ok %in% TRUE, na.rm = TRUE),
+      mean_log_ratio_FRT = safe_mean(log_ratio_FRT[contrast_ok %in% TRUE]),
+      sd_log_ratio_FRT = safe_sd(log_ratio_FRT[contrast_ok %in% TRUE]),
+      n_log_ratio_positive = sum(log_ratio_FRT[contrast_ok %in% TRUE] > 0, na.rm = TRUE),
+      n_log_ratio_negative = sum(log_ratio_FRT[contrast_ok %in% TRUE] < 0, na.rm = TRUE),
+      log_ratio_sign_switch = dplyr::case_when(
+        n_log_ratio_positive > 0 & n_log_ratio_negative > 0 ~ 1L,
+        TRUE ~ 0L
+      ),
+      .groups = "drop"
+    )
+
+  contrast_comparison <- contrast_summary %>%
+    dplyr::select(
+      experiment,
+      AOI,
+      aggr_level,
+      n_aoi_in_cluster,
+      strategy,
+      n_topic_splits,
+      mean_log_ratio_FRT,
+      sd_log_ratio_FRT,
+      log_ratio_sign_switch
+    ) %>%
+    tidyr::pivot_wider(
+      names_from = strategy,
+      values_from = c(
+        n_topic_splits,
+        mean_log_ratio_FRT,
+        sd_log_ratio_FRT,
+        log_ratio_sign_switch
+      ),
+      names_sep = "__"
+    ) %>%
+    dplyr::mutate(
+      delta_sd_log_ratio_FRT_agg_minus_norm =
+        sd_log_ratio_FRT__aggregated_raw - sd_log_ratio_FRT__normalized_single
+    ) %>%
+    dplyr::filter(
+      !is.na(n_topic_splits__aggregated_raw),
+      !is.na(n_topic_splits__normalized_single)
+    )
+
+  list(
+    contrasts_raw = all_contrasts,
+    contrast_summary = contrast_summary,
+    contrast_comparison = contrast_comparison
+  )
+}
+
+# =========================================================
+# ÜBER ALLE EXPERIMENTE
+# =========================================================
+
+run_head_to_head_all_gamma <- function(dfs,
+                                       response_raw = "FRT",
+                                       response_norm = "FRT.WD",
+                                       experiments_with_speaker = c("n_bed", "n_ein", "CS")) {
+  nested <- purrr::imap(dfs, function(df, exp_name) {
+    run_head_to_head_one_experiment_gamma(
+      df = df,
+      exp_name = exp_name,
+      response_raw = response_raw,
+      response_norm = response_norm,
+      use_speaker = exp_name %in% experiments_with_speaker
+    )
+  })
+
+  list(
+    nested = nested,
+    contrasts_raw_all = dplyr::bind_rows(purrr::map(nested, "contrasts_raw")),
+    contrast_summary_all = dplyr::bind_rows(purrr::map(nested, "contrast_summary")),
+    contrast_comparison_all = dplyr::bind_rows(purrr::map(nested, "contrast_comparison"))
+  )
+}
+
+# =========================================================
+# AUSFÜHREN
+# =========================================================
+
+res_head_to_head_gamma <- run_head_to_head_all_gamma(
+  dfs = dfs,
+  response_raw = "FRT",
+  response_norm = "FRT.WD",
+  experiments_with_speaker = experiments_with_speaker
+)
+
+# =========================================================
+# ESSENZIELLE OUTPUTS
+# =========================================================
+
+# 1. Splitweise Log-Ratio-Kontraste
+#round_df_4(res_head_to_head_gamma$contrasts_raw_all)
+
+# 2. AOI-spezifische Stabilität über Topic-LOO-Splits
+#round_df_4(res_head_to_head_gamma$contrast_summary_all)
+
+# 3. Direkter Vergleich aggregated vs normalized
+round_df_4(res_head_to_head_gamma$contrast_comparison_all)
+```
+
+Die Ergebnisse sprechen insgesamt eher für die aggregierte AOI-Modellierung. Über alle 22 AOIs hinweg zeigte das aggregierte Rohzeitmodell in der Mehrzahl der Fälle die geringere Standardabweichung des log-ratio-basierten Condition-Kontrasts und damit die höhere Stabilität über die Topic-LOO-Splits. Dieser Vorteil war besonders deutlich in den Datensätzen c_bed und n_bed, in denen mehrere AOIs innerhalb größerer Cluster nicht nur stabilere, sondern teils auch inhaltlich deutlich abweichende mittlere Condition-Effekte ergaben als im normierten Ansatz. 
+Auffällig war dies vor allem in Clustern mit zwei oder drei AOIs, etwa bei AOI 2 und 3 in c_bed sowie bei AOI 2 und 3 in n_bed, wo sich zwischen beiden Strategien nicht nur die Streuung, sondern zum Teil auch Richtung und Stärke des geschätzten Effekts klar unterschieden. Dagegen fielen Ein-AOI-Cluster meist unauffälliger aus; dort lagen die mittleren Kontraste der beiden Strategien häufiger näher beieinander, was dafür spricht, dass sich die Unterschiede vor allem dann zeigen, wenn die AOI-Struktur im aggregierten Modell tatsächlich gemeinsam genutzt werden kann. 
+Keine einheitliche Überlegenheit ergab sich jedoch für alle Datensätze: Während c_bed, c_ein, n_bed und in abgeschwächter Form auch CS eher zugunsten der Aggregation ausfielen, zeigte n_ein eher Vorteile für die normierte Strategie. Insgesamt deutet der Vergleich damit darauf hin, dass die aggregierte AOI-Modellierung häufig robustere und in mehreren Multi-AOI-Clustern auch inhaltlich konsistentere Aussagen zum Condition-Effekt ermöglicht, ohne dass daraus eine ausnahmslose Überlegenheit für alle Datensätze abgeleitet werden kann.
+

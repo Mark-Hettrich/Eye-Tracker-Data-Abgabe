@@ -1,0 +1,829 @@
+---
+title: "isZeroInformative"
+output: html_document
+---
+
+```{r}
+library(here)
+library(dplyr)
+library(tidyr)
+library(purrr)
+library(tibble)
+```
+
+```{r, readin}
+file_path <- here("Data", "Camila_Bedeutung", "data_prepared.csv")
+cam_bed <- read.csv(file_path, sep = ";")
+
+file_path <- here("Data", "Camila_Einheit", "data_prepared.csv")
+cam_ein <- read.csv(file_path, sep = ";")
+
+file_path <- here("Data", "Nebrija_Bedeutung", "data_prepared.csv")
+neb_bed <- read.csv(file_path, sep = ";")
+
+file_path <- here("Data", "Nebrija_Einheit", "data_prepared.csv")
+neb_ein <- read.csv(file_path, sep = ";")
+
+file_path <- here("Data", "Code_Switching", "data_prepared_new.csv")
+cs <- read.csv(file_path, sep = ";")
+
+file_path <- here("Data", "Incluso", "data_prepared.csv")
+inc <- read.csv(file_path, sep = ";")
+```
+
+```{r, make col.names equal}
+inc <- inc %>%
+  dplyr::rename(
+    RRT    = SRT,
+    RRT.WD = SRT.WD,
+    condition = Kondition
+  )
+
+cs <- cs %>%
+  dplyr::rename(
+    nWords    = WORD_COUNT,
+    nLetters = CHARACTER_COUNT,
+    Topic = TOPIC,
+    Participant = ID_PARTICIPANT,
+    condition = CONDITION,
+    nLetters.WD = CHARACTER_COUNT.WD
+  )
+```
+
+```{r, make factors}
+# pack your data frames
+dfs <- list(
+  cam_bed = cam_bed,
+  cam_ein = cam_ein,
+  neb_bed = neb_bed,
+  neb_ein = neb_ein,
+  cs      = cs,
+  inc     = inc
+)
+
+make_factor_cols <- function(df) {
+  # core IDs
+  core <- c("Participant", "AOI", "Topic", "condition")
+
+  # common extra grouping and design columns across your projects
+  extras <- c(
+    "speaker", "speaker_group", "participant_group", "group", "PARTICIPANT_GROUP", "Stimulus", 
+    "meaning", "unit",
+    "a", "b",
+    "Themenblock", "Thema", "Themen", "List", "list"
+  )
+
+  cols <- intersect(c(core, extras), names(df))
+
+  df %>%
+    mutate(across(all_of(cols), ~ as.factor(.x)))
+}
+
+dfs <- imap(dfs, ~ make_factor_cols(.x))
+```
+
+```{r, make .WD integers}
+dfs <- list(
+  cam_bed = cam_bed,
+  cam_ein = cam_ein,
+  neb_bed = neb_bed,
+  neb_ein = neb_ein,
+  cs      = cs,
+  inc     = inc
+)
+
+to_num_comma <- function(x) {
+  if (is.factor(x)) x <- as.character(x)
+  if (is.character(x)) x <- gsub(",", ".", x, fixed = TRUE)
+  suppressWarnings(as.numeric(x))
+}
+
+cols_to_int <- c("FRT.WD", "RRT.WD", "TRT.WD", "nLetters.WD")
+
+make_int_cols <- function(df) {
+  cols <- intersect(cols_to_int, names(df))
+  if (length(cols) == 0) return(df)
+
+  df %>%
+    mutate(across(
+      all_of(cols),
+      ~ as.integer(round(to_num_comma(.x)))
+    ))
+}
+
+dfs <- imap(dfs, ~ make_int_cols(.x))
+```
+
+
+cs wurde nicht bereinigt, oder falsch. 
+Oder AOI 2 ist nicht gesamter Text:
+In descriptionReport wird whole critical Item beschrieben. Dabei summieren wir in der Outlier Definition (siehe Rmd cs: 1_descriptionReport_new.rmd) AOIs für "whole critical item".
+
+cs wird neu gecleaned, wegen fehler in desc.rep. nötig (sie haben any.fast.reader nicht auf RRT überprüft)
+```{r, cs neu cleanen}
+# robust numeric parsing (handles comma decimals if they ever appear)
+to_num <- function(x) {
+  if (is.factor(x)) x <- as.character(x)
+  if (is.character(x)) x <- gsub(",", ".", x, fixed = TRUE)
+  suppressWarnings(as.numeric(x))
+}
+
+clean_cs_outliers <- function(cs,
+                              thr_fast = 80,   # ms/word
+                              thr_slow = 800   # ms/word
+) {
+  # 0) enforce required columns
+  req <- c("TRIAL","Participant","Topic","condition","PARTICIPANT_GROUP",
+           "AOI","nWords","TRT","FRT","RRT")
+  miss <- setdiff(req, names(cs))
+  if (length(miss) > 0) stop(paste("Missing columns:", paste(miss, collapse = ", ")), call. = FALSE)
+
+  # 1) parse numeric columns (do NOT round before flagging outliers)
+  cs2 <- cs %>%
+    mutate(across(all_of(c("nWords","TRT","FRT","RRT")), to_num))
+
+  # 2) build "whole critical item" per TRIAL by summing over AOIs
+  whole_ci <- cs2 %>%
+    group_by(TRIAL) %>%
+    summarise(
+      Participant = first(Participant),
+      Topic = first(Topic),
+      condition = first(condition),
+      PARTICIPANT_GROUP = first(PARTICIPANT_GROUP),
+      # sums over AOIs
+      TRT_sum = sum(TRT, na.rm = TRUE),
+      FRT_sum = sum(FRT, na.rm = TRUE),
+      RRT_sum = sum(RRT, na.rm = TRUE),
+      nWords_sum = sum(nWords, na.rm = TRUE),
+      n_AOI = n_distinct(AOI),
+      .groups = "drop"
+    ) %>%
+    mutate(
+      TRT.WD = TRT_sum / nWords_sum,
+      FRT.WD = FRT_sum / nWords_sum,
+      RRT.WD = RRT_sum / nWords_sum,
+      # outlier rules on whole critical item (per word)
+      out_first_skip  = is.finite(FRT.WD) & FRT.WD == 0,
+      out_fast_reader = is.finite(FRT.WD) & is.finite(RRT.WD) & FRT.WD < thr_fast & RRT.WD < thr_fast,
+      out_slow_reader = is.finite(TRT.WD) & TRT.WD > thr_slow,
+      any_outlier = out_first_skip | out_fast_reader | out_slow_reader
+    )
+
+  out_trials <- whole_ci %>%
+    filter(any_outlier) %>%
+    pull(TRIAL) %>%
+    unique()
+
+  # 3) delete full trials from the original AOI-level data
+  cs_clean <- cs2 %>%
+    filter(!(TRIAL %in% out_trials))
+
+  # 4) small summary you can print in the report
+  summary <- whole_ci %>%
+    summarise(
+      n_trials = n(),
+      n_out_trials = sum(any_outlier),
+      n_first_skip = sum(out_first_skip),
+      n_fast_reader = sum(out_fast_reader),
+      n_slow_reader = sum(out_slow_reader),
+      .groups = "drop"
+    )
+
+  list(
+    cs_clean = cs_clean,
+    whole_ci = whole_ci,
+    out_trials = out_trials,
+    summary = summary
+  )
+}
+
+# run it
+res_cs <- clean_cs_outliers(cs)
+
+res_cs$summary
+res_cs$whole_ci %>%
+  filter(any_outlier) %>%
+  select(TRIAL, Participant, Topic, condition, PARTICIPANT_GROUP,
+         nWords_sum, FRT.WD, RRT.WD, TRT.WD,
+         out_first_skip, out_fast_reader, out_slow_reader)
+```
+
+ein Trial fällt raus.
+```{r, cs überschreiben}
+cs <- res_cs$cs_clean
+```
+
+Nebrija fixed
+```{r}
+neb_ein <- neb_ein %>%
+  mutate(
+    condition_chr = as.character(condition),
+    AOI_num = as.integer(as.character(AOI)),
+    AOI_num = ifelse(
+      Topic == "S2" &
+        grepl("_CU$", condition_chr) &
+        AOI_num == 4 &
+        nLetters == 5,
+      3,
+      AOI_num
+    ),
+    AOI = factor(AOI_num)
+  ) %>%
+  select(-condition_chr, -AOI_num)
+```
+
+Inc Fixed, AOI AT mit nLetters = 5 gelöscht, sind exakte kopien für AOI F.
+```{r}
+# remove the duplicated AT rows that are exact copies of F (Topic T9, condition c1a1, nLetters=5)
+inc <- inc %>%
+  anti_join(
+    inc %>%
+      filter(Topic == "T9", condition == "c1a1", AOI == "AT", nLetters == 5) %>%
+      select(Participant, Topic, condition, AOI, nWords, nLetters, FRT, RRT, TRT),
+    by = c("Participant","Topic","condition","AOI","nWords","nLetters","FRT","RRT","TRT")
+  )
+```
+
+
+
+Is Zero Informative? If yes: think twice about modeling > 0. Otherwise interpretation changes to:
+For AOIs which were fixated in the First Pass: 
+
+We check for: TRT, FRT & RRT.
+
+TRT:
+```{r}
+dfs_raw <- list(
+  cam_bed = cam_bed,
+  cam_ein = cam_ein,
+  neb_bed = neb_bed,
+  neb_ein = neb_ein,
+  cs      = cs,
+  inc     = inc
+)
+
+as_numeric_safe <- function(x) {
+  if (is.factor(x)) x <- as.character(x)
+  if (is.character(x)) x <- gsub(",", ".", x, fixed = TRUE)
+  suppressWarnings(as.numeric(x))
+}
+
+skip_return_summary <- function(df, exp_name) {
+  FRTn <- as_numeric_safe(df$FRT)
+  RRTn <- if ("RRT" %in% names(df)) as_numeric_safe(df$RRT) else rep(NA_real_, nrow(df))
+  TRTN <- if ("TRT" %in% names(df)) as_numeric_safe(df$TRT) else rep(NA_real_, nrow(df))
+
+  trt0 <- is.finite(TRTN) & TRTN == 0
+  trtpos <- is.finite(TRTN) & TRTN > 0
+
+  frt0 <- is.finite(FRTn) & FRTn == 0
+  frtpos <- is.finite(FRTn) & FRTn > 0
+
+  rrt0 <- is.finite(RRTn) & RRTn == 0
+  rrtpos <- is.finite(RRTn) & RRTn > 0
+
+  tibble(
+    Experiment = exp_name,
+    n_rows = nrow(df),
+
+    # never fixated
+    n_TRT0 = sum(trt0, na.rm = TRUE),
+    prop_TRT0 = mean(trt0, na.rm = TRUE),
+
+    # skip then return: no first-pass, but some later fixation (TRT>0)
+    n_FRT0_TRTpos = sum(frt0 & trtpos, na.rm = TRUE),
+    prop_FRT0_TRTpos = mean(frt0 & trtpos, na.rm = TRUE),
+
+    # among "at risk" rows (TRT>0): how often is RRT positive?
+    n_TRTpos = sum(trtpos, na.rm = TRUE),
+    prop_RRTpos_given_TRTpos = ifelse(sum(trtpos, na.rm = TRUE) == 0, NA_real_,
+                                      sum(rrtpos & trtpos, na.rm = TRUE) / sum(trtpos, na.rm = TRUE)),
+
+    # optional: among TRT>0, how often is FRT==0 (skip first pass)
+    prop_FRT0_given_TRTpos = ifelse(sum(trtpos, na.rm = TRUE) == 0, NA_real_,
+                                    sum(frt0 & trtpos, na.rm = TRUE) / sum(trtpos, na.rm = TRUE))
+  )
+}
+
+skip_return_table <- imap_dfr(dfs_raw, ~ skip_return_summary(.x, .y))
+skip_return_table
+```
+wir sehen: keine FRT = 0 ohne TRT = 0, also reicht TRT analyse aus. 
+
+```{r}
+dfs_raw <- list(
+  cam_bed = cam_bed,
+  cam_ein = cam_ein,
+  neb_bed = neb_bed,
+  neb_ein = neb_ein,
+  cs      = cs,
+  inc     = inc
+)
+
+as_numeric_safe <- function(x) {
+  if (is.factor(x)) x <- as.character(x)
+  if (is.character(x)) x <- gsub(",", ".", x, fixed = TRUE)
+  suppressWarnings(as.numeric(x))
+}
+
+trt0_len_table <- function(df) {
+  if (!("TRT" %in% names(df))) return(NULL)
+
+  trt_num <- as_numeric_safe(df$TRT)
+
+  df %>%
+    mutate(TRT_num = trt_num) %>%
+    filter(is.finite(TRT_num) & TRT_num == 0) %>%
+    count(AOI, nWords, nLetters, name = "n_trt0") %>%
+    arrange(desc(n_trt0), AOI, nWords, nLetters)
+}
+
+trt0_len_by_exp <- imap(dfs_raw, ~ trt0_len_table(.x))
+
+print_trt0_len <- function(exp_name) {
+  cat("\n============================\n")
+  cat("Experiment:", exp_name, "\n")
+  cat("============================\n")
+  x <- trt0_len_by_exp[[exp_name]]
+  if (is.null(x)) {
+    cat("TRT not available in this experiment\n")
+  } else {
+    print(x)
+  }
+}
+
+print_trt0_len("cam_bed")
+print_trt0_len("cam_ein")
+print_trt0_len("neb_bed")
+print_trt0_len("neb_ein")
+print_trt0_len("cs")
+print_trt0_len("inc")
+```
+
+```{r, TRT helpers}
+# Block 1/4: Setup + helpers (TRT==0)
+
+dfs_raw <- list(
+  cam_bed = cam_bed,
+  cam_ein = cam_ein,
+  neb_bed = neb_bed,
+  neb_ein = neb_ein,
+  cs      = cs,
+  inc     = inc
+)
+
+as_numeric_safe <- function(x) {
+  if (is.factor(x)) x <- as.character(x)
+  if (is.character(x)) x <- gsub(",", ".", x, fixed = TRUE)
+  suppressWarnings(as.numeric(x))
+}
+
+add_trt0 <- function(df) {
+  if (!("TRT" %in% names(df))) {
+    return(df %>% mutate(trt0 = NA))
+  }
+  trt_num <- as_numeric_safe(df$TRT)
+  df %>% mutate(trt0 = is.finite(trt_num) & trt_num == 0)
+}
+
+prop_table <- function(df, var) {
+  df %>%
+    group_by(.data[[var]]) %>%
+    summarise(
+      n = n(),
+      n_trt0 = sum(trt0, na.rm = TRUE),
+      prop_trt0 = mean(trt0, na.rm = TRUE),
+      .groups = "drop"
+    )
+}
+
+overall_table <- function(df, exp_name) {
+  tibble(
+    Experiment = exp_name,
+    n = nrow(df),
+    n_trt0 = sum(df$trt0, na.rm = TRUE),
+    prop_trt0 = mean(df$trt0, na.rm = TRUE)
+  )
+}
+
+# Nebrija: speaker is prefix of condition (H/E/N)
+add_neb_speaker <- function(df) {
+  df %>%
+    mutate(
+      .cond_chr = as.character(condition),
+      speaker = factor(sub("_.*$", "", .cond_chr))
+    ) %>%
+    select(-.cond_chr)
+}
+
+# cs: participant group column name
+get_cs_group_col <- function(df) {
+  intersect(c("PARTICIPANT_GROUP", "participant_group", "group"), names(df))[1]
+}
+```
+
+```{r, Proportion der 0er insgesamt}
+# Block 2/4: Proportion der 0er insgesamt (TRT==0), alle Experimente
+
+trt0_overall <- imap_dfr(dfs_raw, function(df, nm) {
+  df1 <- add_trt0(df)
+  overall_table(df1, nm)
+})
+
+trt0_overall
+```
+
+```{r, Proportion der 0er nach Condition und nach AOI}
+# Block 3/4: Proportion der 0er nach Condition und nach AOI, alle Experimente
+
+trt0_by_condition <- imap(dfs_raw, function(df, nm) {
+  df1 <- add_trt0(df)
+  prop_table(df1, "condition")
+})
+
+trt0_by_AOI <- imap(dfs_raw, function(df, nm) {
+  df1 <- add_trt0(df)
+  prop_table(df1, "AOI")
+})
+
+print_trt0_cond_aoi <- function(exp_name) {
+  cat("\n============================\n")
+  cat("Experiment:", exp_name, "\n")
+  cat("============================\n")
+
+  cat("\nTRT==0 nach Condition\n")
+  print(trt0_by_condition[[exp_name]])
+}
+
+print_trt0_cond_aoi("cam_bed")
+print_trt0_cond_aoi("cam_ein")
+print_trt0_cond_aoi("neb_bed")
+print_trt0_cond_aoi("neb_ein")
+print_trt0_cond_aoi("cs")
+print_trt0_cond_aoi("inc")
+```
+
+```{r}
+print_trt0_cond_aoi <- function(exp_name) {
+  cat("\n============================\n")
+  cat("Experiment:", exp_name, "\n")
+  cat("============================\n")
+
+
+  cat("\nTRT==0 nach AOI\n")
+  print(trt0_by_AOI[[exp_name]])
+}
+
+print_trt0_cond_aoi("cam_bed")
+print_trt0_cond_aoi("cam_ein")
+print_trt0_cond_aoi("neb_bed")
+print_trt0_cond_aoi("neb_ein")
+print_trt0_cond_aoi("cs")
+print_trt0_cond_aoi("inc")
+```
+
+```{r}
+# Block 4/4: Proportion der 0er nach Speaker Groups, nur Nebrija und cs
+
+# Nebrija
+trt0_neb_bed_speaker <- {
+  df1 <- add_neb_speaker(add_trt0(neb_bed))
+  prop_table(df1, "speaker")
+}
+
+trt0_neb_ein_speaker <- {
+  df1 <- add_neb_speaker(add_trt0(neb_ein))
+  prop_table(df1, "speaker")
+}
+
+# cs
+cs_group_col <- get_cs_group_col(cs)
+stopifnot(!is.na(cs_group_col))
+
+trt0_cs_group <- {
+  df1 <- add_trt0(cs) %>% mutate(participant_group = factor(.data[[cs_group_col]]))
+  prop_table(df1, "participant_group")
+}
+
+cat("\n============================\nExperiment: neb_bed\n============================\n")
+print(trt0_neb_bed_speaker)
+
+cat("\n============================\nExperiment: neb_ein\n============================\n")
+print(trt0_neb_ein_speaker)
+
+cat("\n============================\nExperiment: cs\n============================\n")
+print(trt0_cs_group)
+```
+
+```{r}
+# TRT==0: Condition x Topic (Nebrija: split condition into speaker + treatment, use treatment)
+library(dplyr)
+library(purrr)
+
+dfs_raw <- list(
+  cam_bed = cam_bed,
+  cam_ein = cam_ein,
+  neb_bed = neb_bed,
+  neb_ein = neb_ein,
+  cs      = cs,
+  inc     = inc
+)
+
+as_numeric_safe <- function(x) {
+  if (is.factor(x)) x <- as.character(x)
+  if (is.character(x)) x <- gsub(",", ".", x, fixed = TRUE)
+  suppressWarnings(as.numeric(x))
+}
+
+add_neb_treatment <- function(df) {
+  df %>%
+    mutate(
+      .cond_chr = as.character(condition),
+      speaker   = factor(sub("_.*$", "", .cond_chr)),
+      treatment = factor(sub("^.*_", "", .cond_chr))
+    ) %>%
+    select(-.cond_chr)
+}
+
+trt0_cond_topic <- function(df, exp_name) {
+  stopifnot("TRT" %in% names(df))
+  trt_num <- as_numeric_safe(df$TRT)
+
+  df1 <- df %>%
+    mutate(TRT_num = trt_num,
+           trt_valid = is.finite(TRT_num),
+           trt0 = trt_valid & TRT_num == 0)
+
+  # Nebrija: replace condition with treatment (suffix)
+  if (exp_name %in% c("neb_bed", "neb_ein")) {
+    df1 <- add_neb_treatment(df1) %>% mutate(condition2 = treatment)
+    group_vars <- c("condition2", "Topic")
+  } else {
+    df1 <- df1 %>% mutate(condition2 = condition)
+    group_vars <- c("condition2", "Topic")
+  }
+
+  df1 %>%
+    group_by(across(all_of(group_vars))) %>%
+    summarise(
+      n = sum(trt_valid),
+      n_0 = sum(trt0),
+      prop_0 = ifelse(n == 0, NA_real_, n_0 / n),
+      .groups = "drop"
+    ) %>%
+    rename(condition = condition2) #%>%
+    #arrange(desc(prop_0), desc(n_0), Topic, condition)
+}
+
+trt0_cond_topic_by_exp <- imap(dfs_raw, ~ if (!("TRT" %in% names(.x))) NULL else trt0_cond_topic(.x, .y))
+
+print_trt0_cond_topic <- function(exp_name) {
+  cat("\n============================\n")
+  cat("Experiment:", exp_name, "\n")
+  cat("============================\n")
+  x <- trt0_cond_topic_by_exp[[exp_name]]
+  if (is.null(x)) cat("TRT not available\n") else print(x)
+}
+
+print_trt0_cond_topic("cam_bed")
+print_trt0_cond_topic("cam_ein")
+print_trt0_cond_topic("neb_bed")
+print_trt0_cond_topic("neb_ein")
+print_trt0_cond_topic("cs")
+print_trt0_cond_topic("inc")
+```
+
+
+```{r}
+dfs_raw <- list(
+  cam_bed = cam_bed,
+  cam_ein = cam_ein,
+  neb_bed = neb_bed,
+  neb_ein = neb_ein,
+  cs      = cs,
+  inc     = inc
+)
+
+as_numeric_safe <- function(x) {
+  if (is.factor(x)) x <- as.character(x)
+  if (is.character(x)) x <- gsub(",", ".", x, fixed = TRUE)
+  suppressWarnings(as.numeric(x))
+}
+
+add_neb_treatment <- function(df) {
+  df %>%
+    mutate(
+      .cond_chr = as.character(condition),
+      treatment = factor(sub("^.*_", "", .cond_chr))
+    ) %>%
+    select(-.cond_chr)
+}
+
+trt0_aoi_cond_meanletters <- function(df, exp_name) {
+  stopifnot("TRT" %in% names(df))
+
+  trt_num <- as_numeric_safe(df$TRT)
+  nl_num  <- if ("nLetters" %in% names(df)) as_numeric_safe(df$nLetters) else rep(NA_real_, nrow(df))
+
+  df1 <- df %>%
+    mutate(
+      TRT_num = trt_num,
+      nLetters_num = nl_num,
+      trt_valid = is.finite(TRT_num),
+      trt0 = trt_valid & TRT_num == 0
+    )
+
+  if (exp_name %in% c("neb_bed", "neb_ein")) {
+    df1 <- add_neb_treatment(df1) %>% mutate(condition2 = treatment)
+  } else {
+    df1 <- df1 %>% mutate(condition2 = condition)
+  }
+
+  df1 %>%
+    group_by(AOI, condition2) %>%
+    summarise(
+      n = sum(trt_valid),
+      n_0 = sum(trt0),
+      prop_0 = ifelse(n == 0, NA_real_, n_0 / n),
+      mean_nLetters = mean(nLetters_num, na.rm = TRUE),
+      min_nLetters = suppressWarnings(min(nLetters_num, na.rm = TRUE)),
+      max_nLetters = suppressWarnings(max(nLetters_num, na.rm = TRUE)),
+      .groups = "drop"
+    ) %>%
+    mutate(
+      min_nLetters = ifelse(is.infinite(min_nLetters), NA_real_, min_nLetters),
+      max_nLetters = ifelse(is.infinite(max_nLetters), NA_real_, max_nLetters)
+    ) %>%
+    rename(condition = condition2) %>%
+    mutate(across(where(is.numeric), ~ round(.x, 2))) #%>%
+    #arrange(desc(prop_0), desc(n_0), AOI, condition)
+}
+
+trt0_aoi_cond_by_exp <- imap(dfs_raw, ~ if (!("TRT" %in% names(.x))) NULL else trt0_aoi_cond_meanletters(.x, .y))
+
+print_trt0_aoi_cond <- function(exp_name) {
+  cat("\n============================\n")
+  cat("Experiment:", exp_name, "\n")
+  cat("============================\n")
+  x <- trt0_aoi_cond_by_exp[[exp_name]]
+  if (is.null(x)) cat("TRT not available\n") else print(x)
+}
+
+print_trt0_aoi_cond("cam_bed")
+print_trt0_aoi_cond("cam_ein")
+print_trt0_aoi_cond("neb_bed")
+print_trt0_aoi_cond("neb_ein")
+print_trt0_aoi_cond("cs")
+print_trt0_aoi_cond("inc")
+```
+
+
+0s von Länge oder von condition verursacht
+```{r}
+
+dfs_raw <- list(
+  cam_bed = cam_bed,
+  cam_ein = cam_ein,
+  neb_bed = neb_bed,
+  neb_ein = neb_ein,
+  cs      = cs,
+  inc     = inc
+)
+
+as_numeric_safe <- function(x) {
+  if (is.factor(x)) x <- as.character(x)
+  if (is.character(x)) x <- gsub(",", ".", x, fixed = TRUE)
+  suppressWarnings(as.numeric(x))
+}
+
+add_neb_treatment <- function(df) {
+  df %>%
+    mutate(.cond_chr = as.character(condition),
+           condition2 = factor(sub("^.*_", "", .cond_chr))) %>%
+    select(-.cond_chr)
+}
+
+length_by_condition <- function(df, exp_name) {
+  nl <- as_numeric_safe(df$nLetters)
+  df1 <- df %>% mutate(nLetters_num = nl)
+
+  if (exp_name %in% c("neb_bed","neb_ein")) df1 <- add_neb_treatment(df1) else df1 <- df1 %>% mutate(condition2 = condition)
+
+  df1 %>%
+    group_by(condition2) %>%
+    summarise(
+      n = n(),
+      mean_nLetters = mean(nLetters_num, na.rm = TRUE),
+      sd_nLetters = sd(nLetters_num, na.rm = TRUE),
+      min_nLetters = min(nLetters_num, na.rm = TRUE),
+      max_nLetters = max(nLetters_num, na.rm = TRUE),
+      .groups = "drop"
+    ) %>%
+    mutate(across(where(is.numeric), ~ round(.x, 2))) %>%
+    rename(condition = condition2) %>%
+    arrange(desc(mean_nLetters))
+}
+
+len_by_exp <- imap(dfs_raw, ~ length_by_condition(.x, .y))
+
+print_len <- function(exp) {
+  cat("\n============================\nExperiment:", exp, "\n============================\n")
+  print(len_by_exp[[exp]])
+}
+
+print_len("cam_bed"); print_len("cam_ein"); print_len("neb_bed"); print_len("neb_ein"); print_len("cs"); print_len("inc")
+```
+
+
+```{r}
+
+trt0_by_condition_within_lengthbins <- function(df, exp_name, n_bins = 5) {
+  if (!("TRT" %in% names(df))) return(NULL)
+
+  TRTN <- as_numeric_safe(df$TRT)
+  nl <- as_numeric_safe(df$nLetters)
+
+  df1 <- df %>%
+    mutate(
+      TRT_num = TRTN,
+      trt_valid = is.finite(TRT_num),
+      trt0 = trt_valid & TRT_num == 0,
+      nLetters_num = nl
+    ) %>%
+    filter(!is.na(nLetters_num))
+
+  if (exp_name %in% c("neb_bed","neb_ein")) df1 <- add_neb_treatment(df1) else df1 <- df1 %>% mutate(condition2 = condition)
+
+  # Bins nach nLetters innerhalb des Experiments
+  qs <- quantile(df1$nLetters_num, probs = seq(0, 1, length.out = n_bins + 1), na.rm = TRUE)
+  qs <- unique(qs)
+  if (length(qs) < 3) return(NULL)
+
+  df1 <- df1 %>%
+    mutate(len_bin = cut(nLetters_num, breaks = qs, include.lowest = TRUE, right = TRUE))
+
+  # Zellrate: pro (condition, len_bin) Anteil TRT==0
+  cell <- df1 %>%
+    group_by(condition2, len_bin) %>%
+    summarise(
+      n = sum(trt_valid),
+      n_0 = sum(trt0),
+      prop_0 = ifelse(n == 0, NA_real_, n_0 / n),
+      .groups = "drop"
+    )
+
+  # Standardisierung: gleiche Laengenverteilung fuer alle Conditions
+  w <- df1 %>%
+    group_by(len_bin) %>%
+    summarise(w = n() / nrow(df1), .groups = "drop")
+
+  # Replace the "std" part in check 2 with this renormalized version
+
+std <- cell %>%
+  left_join(w, by = "len_bin") %>%
+  group_by(condition2) %>%
+  summarise(
+    std_prop_0 = {
+      ww <- w
+      pp <- prop_0
+      denom <- sum(ww[!is.na(pp)])
+      ifelse(denom == 0, NA_real_, sum(pp * ww, na.rm = TRUE) / denom)
+    },
+    .groups = "drop"
+  )
+
+  # Rohrate zum Vergleich
+  raw <- df1 %>%
+    group_by(condition2) %>%
+    summarise(
+      raw_prop_0 = mean(trt0, na.rm = TRUE),
+      .groups = "drop"
+    )
+
+  list(
+    cell_rates = cell %>% mutate(prop_0 = round(prop_0, 4)),
+    raw_vs_std = raw %>% left_join(std, by = "condition2") %>%
+      mutate(across(where(is.numeric), ~ round(.x, 4))) %>%
+      rename(condition = condition2)
+  )
+}
+
+out_bins <- imap(dfs_raw, ~ trt0_by_condition_within_lengthbins(.x, .y, n_bins = 5))
+
+print_bins <- function(exp) {
+  cat("\n============================\nExperiment:", exp, "\n============================\n")
+  x <- out_bins[[exp]]
+  if (is.null(x)) { cat("No output (maybe no TRT or too few distinct nLetters)\n"); return() }
+
+  cat("\nRaw vs length-standardized prop(TRT==0)\n")
+  print(x$raw_vs_std)
+
+  cat("\nCell rates: condition x length-bin\n")
+  print(x$cell_rates)
+}
+
+print_bins("cam_bed"); print_bins("cam_ein"); print_bins("neb_bed"); print_bins("neb_ein"); print_bins("cs"); print_bins("inc")
+```
+Ja, zero ist auch unabhängig von Länge ungleich zwischen conditions. 
+
+

@@ -1,0 +1,186 @@
+---
+title: "AOI_allOverlaps"
+output:
+  html_document: default
+  pdf_document: default
+---
+
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+  echo = FALSE,
+  warning = FALSE,
+  message = FALSE,
+  error = FALSE
+)
+```
+
+```{r}
+library(here)
+library(dplyr)
+library(tidyr)
+library(purrr)
+library(tibble)
+library(ggplot2)
+library(lme4)
+library(mgcv)
+options(scipen = 999)
+```
+
+```{r}
+c_bed <- readRDS(here("prepped Data", "C_bed.rds"))
+c_ein <- readRDS(here("prepped Data", "C_ein.rds"))
+n_bed <- readRDS(here("prepped Data", "N_bed.rds"))
+n_ein <- readRDS(here("prepped Data", "N_ein.rds"))
+CS    <- readRDS(here("prepped Data", "CS.rds"))
+INC   <- readRDS(here("prepped Data", "INC.rds"))
+```
+
+Anzahl Längenwerte pro AOI
+```{r}
+library(dplyr)
+library(purrr)
+
+# Datensätze
+datasets <- list(
+  c_bed = c_bed,
+  c_ein = c_ein,
+  n_bed = n_bed,
+  n_ein = n_ein,
+  CS    = CS,
+  INC   = INC
+)
+
+# Hilfsfunktion: erste passende Spalte finden
+find_col <- function(df, candidates) {
+  hit <- candidates[candidates %in% names(df)]
+  if (length(hit) == 0) return(NULL)
+  hit[1]
+}
+
+count_distinct_length_values <- function(df, experiment_name) {
+  
+  aoi_col   <- find_col(df, c("AOI", "aoi"))
+  nlet_col  <- find_col(df, c("nLetters", "nLetters.WD", "nLetters.L"))
+  nword_col <- find_col(df, c("nWords", "nWords.WD", "nWords.L"))
+  
+  needed <- c(aoi_col, nlet_col, nword_col)
+  if (any(is.null(needed))) {
+    stop(
+      paste0(
+        "Im Datensatz ", experiment_name, " fehlen benötigte Spalten.\n",
+        "AOI: ", aoi_col, "\n",
+        "nLetters: ", nlet_col, "\n",
+        "nWords: ", nword_col
+      )
+    )
+  }
+  
+  df %>%
+    mutate(
+      AOI_plot = .data[[aoi_col]],
+      nL_plot  = .data[[nlet_col]],
+      nW_plot  = .data[[nword_col]]
+    ) %>%
+    filter(!is.na(AOI_plot)) %>%
+    group_by(AOI_plot) %>%
+    summarise(
+      n_distinct_nLetters = n_distinct(nL_plot[!is.na(nL_plot)]),
+      n_distinct_nWords   = n_distinct(nW_plot[!is.na(nW_plot)]),
+      .groups = "drop"
+    ) %>%
+    mutate(experiment = experiment_name) %>%
+    dplyr::select(experiment, AOI = AOI_plot, n_distinct_nLetters, n_distinct_nWords)
+}
+
+length_summary <- purrr::imap_dfr(datasets, count_distinct_length_values)
+
+length_summary
+```
+
+Wir sehen vor allem in nWords, aber teils auch in nLetters niedrige Anzahlen an unterschiedlichen Werten. 
+
+
+```{r}
+make_length_overlap_jitter_plot <- function(df, experiment_name, aoi_value) {
+  
+  aoi_col   <- find_col(df, c("AOI", "aoi"))
+  cond_col  <- find_col(df, c("Condition", "condition", "cond"))
+  nlet_col  <- find_col(df, c("nLetters", "nLetters.WD", "nLetters.L"))
+  nword_col <- find_col(df, c("nWords", "nWords.WD", "nWords.L"))
+  
+  needed <- c(aoi_col, cond_col, nlet_col, nword_col)
+  if (any(is.null(needed))) {
+    stop("Fehlende benötigte Spalten.")
+  }
+  
+  df_use <- df %>%
+    dplyr::mutate(
+      AOI_plot      = .data[[aoi_col]],
+      Cond_plot     = as.factor(.data[[cond_col]]),
+      nLetters_plot = .data[[nlet_col]],
+      nWords_plot   = .data[[nword_col]]
+    ) %>%
+    dplyr::filter(
+      !is.na(AOI_plot),
+      !is.na(Cond_plot),
+      !is.na(nLetters_plot),
+      !is.na(nWords_plot),
+      AOI_plot == aoi_value
+    ) %>%
+    tidyr::pivot_longer(
+      cols = c(nLetters_plot, nWords_plot),
+      names_to = "length_type",
+      values_to = "length_value"
+    ) %>%
+    dplyr::mutate(
+      length_type = dplyr::recode(
+        length_type,
+        nLetters_plot = "nLetters",
+        nWords_plot   = "nWords"
+      )
+    )
+  
+  ggplot(df_use, aes(x = length_value, y = Cond_plot)) +
+    geom_jitter(height = 0.12, width = 0, alpha = 0.6, size = 1.3) +
+    facet_wrap(~ length_type, scales = "free_x", ncol = 1) +
+    labs(
+      title = paste0(experiment_name, " | AOI ", aoi_value),
+      subtitle = "Horizontaler Jitterplot nach Condition",
+      x = "Länge",
+      y = "Condition"
+    ) +
+    theme_minimal(base_size = 10) +
+    theme(
+      strip.text = element_text(size = 10),
+      plot.title = element_text(size = 11, face = "bold"),
+      plot.subtitle = element_text(size = 9),
+      axis.text = element_text(size = 9),
+      axis.title = element_text(size = 10),
+      panel.spacing = unit(0.6, "lines")
+    )
+}
+for (nm in names(all_length_overlap_plots)) {
+  print(all_length_overlap_plots[[nm]])
+} 
+p_n_bed_aoi2 <- make_length_overlap_jitter_plot(
+  df = n_bed,
+  experiment_name = "n_bed",
+  aoi_value = 2
+)
+
+p_n_bed_aoi2
+ggsave(
+  filename = "n_bed_AOI2_length_overlap_jitter.png",
+  plot = p_n_bed_aoi2,
+  width = 10,
+  height = 5,
+  dpi = 300
+)
+```
+
+
+
+Wir beobachten: Meist, aber nicht immer sind die Werte zwischen Conditions vermischt. Allerdings, gemeinsam mit der niedrigen Anzahl an verschiedenen Werten lässt sich hier die identifizierbarkeit eines Terms in einer einzelnen AOI bezweifeln.
+
+
