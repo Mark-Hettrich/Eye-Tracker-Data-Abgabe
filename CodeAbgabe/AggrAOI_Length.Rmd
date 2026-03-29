@@ -8,9 +8,25 @@ knitr::opts_chunk$set(
   echo = FALSE,
   warning = FALSE,
   message = FALSE,
-  error = FALSE
+  error = FALSE,
+  results = "asis"
 )
 ```
+<style>
+table {
+  width: 100%;
+  table-layout: fixed;
+  border-collapse: collapse;
+}
+
+th, td {
+  white-space: normal !important;
+  word-wrap: break-word;
+  overflow-wrap: break-word;
+  vertical-align: top;
+  padding: 4px;
+}
+</style>
 
 ```{r}
 library(here)
@@ -42,100 +58,11 @@ CS    <- CS    %>% dplyr::filter(!is.na(FRT), FRT > 0)
 INC   <- INC   %>% dplyr::filter(!is.na(FRT), FRT > 0)
 ```
 
-Explizite Prüfung, nLetters vs nWords pro Cluster - Anzahl Werte & Variation:
-```{r}
-library(dplyr)
-library(purrr)
-library(tidyr)
-library(tibble)
-
-# =========================================================
-# INPUT
-# Erwartet vorhandene Datensätze:
-# c_bed, c_ein, n_bed, n_ein, CS
-# =========================================================
-
-dfs <- list(
-  c_bed = c_bed,
-  c_ein = c_ein,
-  n_bed = n_bed,
-  n_ein = n_ein,
-  CS    = CS
-)
-
-# =========================================================
-# HELFER
-# =========================================================
-
-round_df_4 <- function(df) {
-  df %>%
-    mutate(across(where(is.numeric), ~ round(.x, 4)))
-}
-
-# =========================================================
-# ZÄHLUNG PRO EXPERIMENT × AGGR_LEVEL
-# =========================================================
-
-count_distinct_lengths_by_cluster <- function(df, exp_name) {
-  needed <- c("aggr_level", "AOI", "nWords", "nLetters")
-  missing_cols <- setdiff(needed, names(df))
-
-  if (length(missing_cols) > 0) {
-    stop(
-      "Im Datensatz ", exp_name, " fehlen folgende Variablen: ",
-      paste(missing_cols, collapse = ", ")
-    )
-  }
-
-  df %>%
-    filter(!is.na(aggr_level), !is.na(AOI)) %>%
-    group_by(aggr_level) %>%
-    summarise(
-      experiment = exp_name,
-      n_aoi_in_cluster = n_distinct(AOI),
-      n_obs = dplyr::n(),
-      n_distinct_nWords = n_distinct(nWords[!is.na(nWords)]),
-      n_distinct_nLetters = n_distinct(nLetters[!is.na(nLetters)]),
-      min_nWords = suppressWarnings(min(nWords, na.rm = TRUE)),
-      max_nWords = suppressWarnings(max(nWords, na.rm = TRUE)),
-      min_nLetters = suppressWarnings(min(nLetters, na.rm = TRUE)),
-      max_nLetters = suppressWarnings(max(nLetters, na.rm = TRUE)),
-      .groups = "drop"
-    ) %>%
-    relocate(experiment, .before = aggr_level)
-}
-
-# =========================================================
-# ÜBER ALLE EXPERIMENTE
-# =========================================================
-
-length_distinct_by_cluster <- purrr::imap_dfr(
-  dfs,
-  count_distinct_lengths_by_cluster
-)
-
-# =========================================================
-# OPTIONAL: DIREKTER VERGLEICH
-# Positiv heißt: nLetters hat mehr verschiedene Werte
-# =========================================================
-
-length_distinct_by_cluster <- length_distinct_by_cluster %>%
-  mutate(
-    delta_distinct_nLetters_minus_nWords =
-      n_distinct_nLetters - n_distinct_nWords
-  )
-
-# =========================================================
-# OUTPUT
-# =========================================================
-
-round_df_4(length_distinct_by_cluster)
-```
 
 
-Wir untersuchen das verhalten von nWords und nLetters bei aggregierten AOIs. 
 
-Zuerst: Numerische Stabilität auf vollen Daten:
+
+*Numerische Stabilität auf vollen Daten:*
 ```{r}
 library(dplyr)
 library(tidyr)
@@ -409,21 +336,20 @@ res_full_length_compare <- run_full_length_compare_all(
 #round_df_4(res_full_length_compare$fit_details)
 
 # Gesamte Zählung nWords vs nLetters
-round_df_4(res_full_length_compare$summary_overall)
+
+knitr::kable(
+  round_df_4(res_full_length_compare$summary_overall),
+  format = "html",
+  table.attr = 'style="width:100%; table-layout: fixed;"'
+)
 
 # Kurze Übersicht pro Experiment
 #round_df_4(res_full_length_compare$summary_by_experiment)
 ```
-Bei vollen Daten kann beides problemlos gefitted werden. 
 
-Hauptkriterien
-1) Prediction über Topic-LOO
-2) Fitprobleme / Warnungen in Holdout-Splits
-3) Instabilität in single AOIs - volle Daten - Gamma
-(wir haben auch single AOI cluster: das gibt uns idee, ob probleme vermehrt auftreten könnten)
+<br><br>
 
-
-1) Prediction über Topic-LOO- Gamma
+*1) Prediction über Topic-LOO- Gamma*
 ```{r}
 library(dplyr)
 library(tidyr)
@@ -946,17 +872,25 @@ res_length_term_prediction <- run_length_term_prediction_all(
 #round_df_4(res_length_term_prediction$prediction_summary_all)
 
 # Direkter AOI-Vergleich nWords vs nLetters
-round_df_4(res_length_term_prediction$prediction_comparison_all)
 
+knitr::kable(
+  round_df_4(res_length_term_prediction$prediction_comparison_all),
+  format = "html",
+  table.attr = 'style="width:100%; table-layout: fixed;"'
+)
 # Knappe Zusammenfassung pro Experiment
-round_df_4(res_length_term_prediction$compact_summary_all)
 
+knitr::kable(
+  round_df_4(res_length_term_prediction$compact_summary_all),
+  format = "html",
+  table.attr = 'style="width:100%; table-layout: fixed;"'
+)
 # Noch knapper: alles zusammen
 #round_df_4(res_length_term_prediction$compact_summary_overall)
 ```
-Resultat: Der Nachteil von nWords liegt hier in etwas schlechterer Prediction, und vor allem darin, dass der Term in mehreren Clustern überhaupt keine prädiktiv nutzbaren Vorhersagen liefert.
+<br><br>
 
-2) Fitprobleme / Warnungen in Holdout-Splits- Gamma
+*2) Fitprobleme / Warnungen in Holdout-Splits- Gamma*
 ```{r}
 library(dplyr)
 library(tidyr)
@@ -1452,59 +1386,26 @@ res_length_term_fitprob_no_splitcheck <- run_length_term_fitprob_all_no_splitche
 #round_df_4(res_length_term_fitprob_no_splitcheck$comparison_all)
 
 # Knappe Tabelle pro Experiment
-round_df_4(res_length_term_fitprob_no_splitcheck$compact_all)
-
+knitr::kable(
+  round_df_4(res_length_term_fitprob_no_splitcheck$compact_all) %>% select(experiment, n_splits, rankdef_nLetters, rankdef_nWords),
+  format = "html",
+  table.attr = 'style="width:100%; table-layout: fixed;"'
+)
 # Noch knapper: alles zusammen
-round_df_4(res_length_term_fitprob_no_splitcheck$overall)
+
+knitr::kable(
+  round_df_4(res_length_term_fitprob_no_splitcheck$overall) %>% select(length_term, n_splits, n_rank_deficient, n_with_any_warning),
+  format = "html",
+  table.attr = 'style="width:100%; table-layout: fixed;"'
+)
 ```
 
-Resultat: Splits passen manchmal bei nWords nicht. Rank deficiencies
 
 
-
-Fazit: 
-nWords hat weniger durch den Stimulus verursachte Variation als nLetters.
-Daher sollte nLetters sauberer schätzbar sein. 
+<br><br>
 
 
-Rank deficiencies treten auf vor allem wenn kein Längenunterschied in split zu erkennen ist. Das ist bei vollen Daten also okay, beziehungsweise gewünscht. 
-
-
-Also hier: nLetters werden gewählt, da sie mehr Variation mit sich tragen und so besser geschätzt werden können.
-
-
-Die Clusteraggregation erhöht in den meisten Fällen die Zahl unterschiedlicher nLetters-Werte deutlich und verbessert damit die numerische Identifizierbarkeit eines globalen linearen Längenterms. Das spricht dafür, Aggregation zu nutzen, wenn Länge als Kovariate und nicht über Normierung berücksichtigt werden soll. Allerdings bleibt nLetters inhaltlich stark an AOI x condition x Topic gebunden und ist damit keine frei variierende Kovariate. Die Aggregation verbessert daher vor allem die technische Schätzbarkeit des linearen Längenterms, garantiert aber keine vollständig saubere Trennung von Längen- und Condition-Effekten.
-
-
-Da die Annahmen einer einfachen Normierung in unseren Daten nicht plausibel erfüllt waren, wurde Länge nicht über eine Vorab-Normierung, sondern als Kovariate im Modell berücksichtigt. Um die Schätzbarkeit dieses Längenterms zu verbessern, wurden in den aggregierten Analysen AOIs innerhalb inhaltlich definierter Cluster zusammengefasst. Hintergrund war, dass ein globaler linearer Längeneffekt nur dann stabil schätzbar ist, wenn innerhalb der jeweiligen Modelleinheit genügend Variation in der Längenvariable vorliegt. Deshalb wurde pro Cluster die Zahl unterschiedlicher nLetters-Werte geprüft. Diese lag in den aggregierten Clustern durchweg über sehr kleinen Minimalwerten und war damit für einen einfachen linearen Term grundsätzlich ausreichend. Die Aggregation wurde daher als pragmatische Strategie verstanden, um die numerische Identifizierbarkeit des linearen Längeneffekts zu erhöhen, ohne auf eine in den Daten nicht gestützte Normierung zurückzugreifen.
-
-
-
-
-
-***wie gehen wir mit nLetters um?***
-
-
-Es geht darum zu verstehen, welches das beste Handling unserer Länge ist. 
-
-Diese Tests führen wir vorerst mit Gamma und log-link, später kann man sie mit der ausgewählten Modellfamilie aus bestätigen. 
-
-Es gibt 3 Plausible nutzen für nLetters. 
-
-- nLetters linear - base
-- nLetters in interaktion mit AOI (brauchen AOIs unterschiedliche lineare Steigungen)
-- nLetters als spline
-- nLetters als spline x AOI (brauchen AOIs unterschiedliche nichtlineare Formen)
-
-
-Um zu wissen ob eine komplexere Aufnahme des Längenterms sinnvoll ist, müssen wir wissen: 
-- ob AOIs wirklich unterschiedliche Längensteigungen brauchen
-- ob ein Spline EDF > 1 liefert
-- ob komplexere Modelle technisch stabil bleiben
-- ob sie Prediction oder Fit wirklich verbessern
-
-
-Wir schauen zuerst nach der Interaktion mit AOI x nLetters
+*Interaktion mit AOI x nLetters*
 ```{r}
 library(dplyr)
 library(purrr)
@@ -1827,26 +1728,25 @@ res_aoi_nletters_gamma <- run_all_cluster_length_interaction_tests(
 # OUTPUTS
 # =========================================================
 
-round_df_4(res_aoi_nletters_gamma$comparison_all)
-round_df_4(res_aoi_nletters_gamma$summary_all)
+
+
+knitr::kable(
+  round_df_4(res_aoi_nletters_gamma$comparison_all),
+  format = "html",
+  table.attr = 'style="width:100%; table-layout: fixed;"'
+)
+
+knitr::kable(
+  round_df_4(res_aoi_nletters_gamma$summary_all),
+  format = "html",
+  table.attr = 'style="width:100%; table-layout: fixed;"'
+)
 ```
 
-
-Das bild ist zu gemischt, um eine klare Präferenz auszudrücken.
-
-Der Test liefert kein einheitliches Bild. Dass AOI:nLetters nur in etwa der Hälfte der Cluster einen klaren Vorteil zeigt, spricht gegen seine Verwendung als generelle Standardspezifikation. Ein AOI-spezifischer Längeneffekt kann in einzelnen Clustern sinnvoll sein, wenn sich die Längenwirkung tatsächlich zwischen AOIs unterscheidet, er hebt aber zugleich einen Teil des Parsimonie- und Poolingvorteils der Aggregation wieder auf. Wenn die Aggregation vor allem gewählt wurde, um den Längenterm robuster und einfacher zu schätzen, dann ist ein gemeinsamer linearer nLetters-Term insgesamt die zurückhaltendere und besser begründbare Basisspezifikation. AOI:nLetters wäre dann eher als clusterweise Sensitivitätsanalyse oder gezielte Erweiterung für die Cluster zu verstehen, in denen der Vergleich klar dafür spricht.
+<br><br>
 
 
-Wir sollten weniger über AIC entscheiden, sondern eher über: Ändert sich der Effekt von nLetters je nach AOI?.
-
-Wann ist die Interaktion plausibel?
-Zum Beispiel wenn:
-- frühe AOIs anders auf Länge reagieren als späte
-- in bestimmten AOIs Länge fast irrelevant ist, in anderen stark
-- residuale Muster ohne Interaktion zeigen, dass der lineare Längeneffekt je AOI unterschiedlich verläuft
-
-
-Wir schauen uns auch noch Topic LOO an um zu schauen ob die Interaktion den Fit Instabil macht und ob accuracy verbessert wird
+*Topic-LOO AOI:nLetters vs nLetters*
 ```{r}
 library(dplyr)
 library(tidyr)
@@ -2686,20 +2586,24 @@ res_gamma_aoi_length_interaction_aggregated <- run_topic_loo_compare_all_aggrega
 #round_df_4(res_gamma_aoi_length_interaction_aggregated$fit_comparison_all)
 
 # AOI-weise Mittelwerte über Topics
-round_df_4(res_gamma_aoi_length_interaction_aggregated$aoi_mean_comparison_all)
-
+knitr::kable(
+  round_df_4(res_gamma_aoi_length_interaction_aggregated$aoi_mean_comparison_all) %>% select(experiment, aggr_level, AOI, mean_rmse__no_AOI_nLetters_interaction, mean_rmse__with_AOI_nLetters_interaction, median_rmse__no_AOI_nLetters_interaction, median_rmse__with_AOI_nLetters_interaction, mean_mae__no_AOI_nLetters_interaction,mean_mae__with_AOI_nLetters_interaction, median_mae__with_AOI_nLetters_interaction, delta_mean_rmse_with_minus_without, delta_mean_mae_with_minus_without),
+  format = "html",
+  table.attr = 'style="width:100%; table-layout: fixed;"'
+)
 # Winner counts
-round_df_4(res_gamma_aoi_length_interaction_aggregated$aoi_winner_counts_all)
-
+knitr::kable(
+  round_df_4(res_gamma_aoi_length_interaction_aggregated$aoi_winner_counts_all),
+  format = "html",
+  table.attr = 'style="width:100%; table-layout: fixed;"'
+)
 # Detail pro Fit
 #round_df_4(res_gamma_aoi_length_interaction_aggregated$fit_level_all)
+
+
 ```
-Methodisch wurde geprüft, wie gut die Modelle auf neue Topics innerhalb eines bereits definierten AOI-Clusters generalisieren. Dafür wurde jeweils ein Topic vollständig aus dem Training entfernt, das Modell auf den verbleibenden Topics des Clusters geschätzt und anschließend für das ausgelassene Topic vorhergesagt. Die Vorhersage wurde dann AOI-spezifisch ausgewertet. Der zentrale Vergleich war also nicht, wie gut ein Modell die Trainingsdaten beschreibt, sondern ob ein zusätzlicher AOI-spezifischer Längeneffekt die Vorhersage für unbeobachtete Items innerhalb derselben Clusterstruktur verbessert.
-
-Die Vorhersagemuster sprechen insgesamt gegen einen allgemeinen Nutzen dieses zusätzlichen AOI-spezifischen Längeneffekts. In den meisten AOIs verschlechtert er die Generalisierung auf neue Topics oder bringt höchstens minimale Änderungen. Nur in einzelnen AOIs gibt es lokale Verbesserungen, die aber kein konsistentes Muster über Experimente und Cluster hinweg ergeben. Das deutet darauf hin, dass der zusätzliche Freiheitsgrad meist eher cluster- oder item-spezifische Besonderheiten aufgreift, statt eine robuste, auf neue Topics übertragbare Struktur zu lernen. Entsprechend reicht für die Hauptanalyse ein einfacherer globaler Längeneffekt aus; AOI-spezifische Längeneffekte wären eher etwas für gezielte Nachanalysen einzelner auffälliger Cluster.
-
-
-Wir überprüfen die Anwendung von Splines zuerst mit penalized Splines
+<br><br>
+*nLetters als penalized Spline*
 ```{r}
 library(dplyr)
 library(purrr)
@@ -3141,22 +3045,36 @@ res_cluster_pspline_gamma <- run_cluster_psplines_all(
 # =========================================================
 
 # Alle Cluster
-round_df_4(res_cluster_pspline_gamma$cluster_results_all)
-
+### Tabelle Knitready
+knitr::kable(
+  round_df_4(res_cluster_pspline_gamma$cluster_results_all),
+  format = "html",
+  table.attr = 'style="width:100%; table-layout: fixed;"'
+)
 # Zusammenfassung pro Experiment
-round_df_4(res_cluster_pspline_gamma$summary_results_all)
-
+### Tabelle Knitready
+knitr::kable(
+  round_df_4(res_cluster_pspline_gamma$summary_results_all),
+  format = "html",
+  table.attr = 'style="width:100%; table-layout: fixed;"'
+)
 # Gesamtübersicht
-round_df_4(res_cluster_pspline_gamma$overall)
+#round_df_4(res_cluster_pspline_gamma$overall)
+### Tabelle Knitready
+knitr::kable(
+  round_df_4(res_cluster_pspline_gamma$overall),
+  format = "html",
+  table.attr = 'style="width:100%; table-layout: fixed;"'
+)
+
+
+
+
+
 ```
+<br><br>
 
-Die clustergetrennten penalized-spline-Modelle mit gemeinsamem Spline für nLetters waren in allen Datensätzen technisch stabil fitbar. Inhaltlich zeigte sich jedoch kein einheitliches Muster. Während in c_ein kaum Evidenz für einen nichtlinearen Längeneffekt vorlag und n_bed weitgehend mit einem annähernd linearen Verlauf vereinbar war, zeigten n_ein, CS und Teile von c_bed EDF-Werte klar über 1 und damit Hinweise auf Nichtlinearität. Ein gemeinsamer penalized spline ist damit als flexible Sensitivitätsanalyse gut vertretbar, rechtfertigt aber auf Basis dieser Ergebnisse noch keine pauschale Ablösung des linearen nLetters-Terms in allen Clustern.
-
-Wegen der starken Designgebundenheit von nLetters an AOI x condition x Topic und der fehlenden konsistenten Evidenz für zusätzliche Flexibilität sollte der Längeneffekt parsimonisch modelliert werden. Ein gemeinsamer linearer nLetters-Term nutzt den Aggregationsvorteil, bleibt über alle Experimente hinweg anwendbar und vermeidet die zusätzliche Komplexität flexibler oder AOI-spezifischer Längenmodellierung, die in den vorliegenden Daten keinen durchgängig überzeugenden Mehrwert zeigt.
-
-Da bereits die alleinstehenden splines ohne AOI interaktion fragwürdig sind, versuchen wir gar nicht die Splines by AOI zu rechtfertigen.
-
-Wir testen noch performance in einem Topic - LOO von penalized splines vs nLetters.
+*Prädiktion Topic - LOO von penalized splines vs nLetters.*
 ```{r}
 library(dplyr)
 library(purrr)
@@ -3628,20 +3546,20 @@ res_topicloo_linear_vs_pspline <- run_topicloo_linear_vs_pspline_all(
 # =========================================================
 # OUTPUTS
 # =========================================================
-
+knitr::kable(
+  round_df_4(res_topicloo_linear_vs_pspline$cluster_summary_all),
+  format = "html",
+  table.attr = 'style="width:100%; table-layout: fixed;"'
+)
+knitr::kable(
+  round_df_4(res_topicloo_linear_vs_pspline$experiment_summary_all),
+  format = "html",
+  table.attr = 'style="width:100%; table-layout: fixed;"'
+)
 #round_df_4(res_topicloo_linear_vs_pspline$split_results_all)
-round_df_4(res_topicloo_linear_vs_pspline$cluster_summary_all)
-round_df_4(res_topicloo_linear_vs_pspline$experiment_summary_all)
 #round_df_4(res_topicloo_linear_vs_pspline$overall_summary)
+
 ```
 
 
 
-
-Für den Topic-LOO-Vergleich wurden Vorhersagen in beiden Modellen erzeugt
-
-Der clustergetrennte Topic-LOO-Vergleich ergab keinen konsistenten Vorhersagevorteil eines gemeinsamen penalized splines gegenüber einem linearen nLetters-Term. Zwar war der Spline technisch in allen Clustern stabil fitbar, seine Vorhersagegüte fiel jedoch über die Experimente hinweg uneinheitlich aus. In einzelnen Datensätzen zeigte sich ein leichter Vorteil, in anderen war der lineare Term gleich gut oder besser, und im CS-Datensatz schnitt der Spline deutlich schlechter ab. Für eine einheitliche Modellspezifikation über alle Experimente hinweg spricht dies gegen den penalized spline als Standardspezifikation und eher für den parsimonischeren linearen nLetters-Term.
-
-
-
-Fazit: wir modellieren mit der minimalen Version: nLetters als linearer Koeffizient

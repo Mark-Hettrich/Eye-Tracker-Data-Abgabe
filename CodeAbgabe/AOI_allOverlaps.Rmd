@@ -15,6 +15,22 @@ knitr::opts_chunk$set(
 )
 ```
 
+<style>
+table {
+  width: 100%;
+  table-layout: fixed;
+  border-collapse: collapse;
+}
+
+th, td {
+  white-space: normal !important;
+  word-wrap: break-word;
+  overflow-wrap: break-word;
+  vertical-align: top;
+  padding: 4px;
+}
+</style>
+
 ```{r}
 library(here)
 library(dplyr)
@@ -94,12 +110,16 @@ count_distinct_length_values <- function(df, experiment_name) {
 }
 
 length_summary <- purrr::imap_dfr(datasets, count_distinct_length_values)
-
-length_summary
+knitr::kable(
+  length_summary,
+  format = "html",
+  table.attr = 'style="width:100%; table-layout: fixed;"'
+)
 ```
 
 Wir sehen vor allem in nWords, aber teils auch in nLetters niedrige Anzahlen an unterschiedlichen Werten. 
 
+<br><br>
 
 ```{r}
 make_length_overlap_jitter_plot <- function(df, experiment_name, aoi_value) {
@@ -193,8 +213,103 @@ for (nm in names(all_length_overlap_plots)) {
 
 ```
 
-
+<br><br>
 
 Wir beobachten: Meist, aber nicht immer sind die Werte zwischen Conditions vermischt. Allerdings, gemeinsam mit der niedrigen Anzahl an verschiedenen Werten lässt sich hier die identifizierbarkeit eines Terms in einer einzelnen AOI bezweifeln.
+
+
+Explizite Prüfung, nLetters vs nWords pro Cluster - Anzahl Werte & Variation:
+```{r}
+library(dplyr)
+library(purrr)
+library(tidyr)
+library(tibble)
+
+# =========================================================
+# INPUT
+# Erwartet vorhandene Datensätze:
+# c_bed, c_ein, n_bed, n_ein, CS
+# =========================================================
+
+dfs <- list(
+  c_bed = c_bed,
+  c_ein = c_ein,
+  n_bed = n_bed,
+  n_ein = n_ein,
+  CS    = CS
+)
+
+# =========================================================
+# HELFER
+# =========================================================
+
+round_df_4 <- function(df) {
+  df %>%
+    mutate(across(where(is.numeric), ~ round(.x, 4)))
+}
+
+# =========================================================
+# ZÄHLUNG PRO EXPERIMENT × AGGR_LEVEL
+# =========================================================
+
+count_distinct_lengths_by_cluster <- function(df, exp_name) {
+  needed <- c("aggr_level", "AOI", "nWords", "nLetters")
+  missing_cols <- setdiff(needed, names(df))
+
+  if (length(missing_cols) > 0) {
+    stop(
+      "Im Datensatz ", exp_name, " fehlen folgende Variablen: ",
+      paste(missing_cols, collapse = ", ")
+    )
+  }
+
+  df %>%
+    filter(!is.na(aggr_level), !is.na(AOI)) %>%
+    group_by(aggr_level) %>%
+    summarise(
+      experiment = exp_name,
+      n_aoi_in_cluster = n_distinct(AOI),
+      n_obs = dplyr::n(),
+      n_distinct_nWords = n_distinct(nWords[!is.na(nWords)]),
+      n_distinct_nLetters = n_distinct(nLetters[!is.na(nLetters)]),
+      min_nWords = suppressWarnings(min(nWords, na.rm = TRUE)),
+      max_nWords = suppressWarnings(max(nWords, na.rm = TRUE)),
+      min_nLetters = suppressWarnings(min(nLetters, na.rm = TRUE)),
+      max_nLetters = suppressWarnings(max(nLetters, na.rm = TRUE)),
+      .groups = "drop"
+    ) %>%
+    relocate(experiment, .before = aggr_level)
+}
+
+# =========================================================
+# ÜBER ALLE EXPERIMENTE
+# =========================================================
+
+length_distinct_by_cluster <- purrr::imap_dfr(
+  dfs,
+  count_distinct_lengths_by_cluster
+)
+
+# =========================================================
+# OPTIONAL: DIREKTER VERGLEICH
+# Positiv heißt: nLetters hat mehr verschiedene Werte
+# =========================================================
+
+length_distinct_by_cluster <- length_distinct_by_cluster %>%
+  mutate(
+    delta_distinct_nLetters_minus_nWords =
+      n_distinct_nLetters - n_distinct_nWords
+  )
+
+# =========================================================
+# OUTPUT
+# =========================================================
+
+knitr::kable(
+  round_df_4(length_distinct_by_cluster),
+  format = "html",
+  table.attr = 'style="width:100%; table-layout: fixed;"'
+)
+```
 
 

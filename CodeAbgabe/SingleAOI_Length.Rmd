@@ -3,10 +3,6 @@ title: "SingleAOI_Length"
 output: html_document
 ---
 
----
-title: "LinearCoef_GammaLog"
-output: html_document
----
 
 
 
@@ -15,10 +11,27 @@ knitr::opts_chunk$set(
   echo = FALSE,
   warning = FALSE,
   message = FALSE,
-  error = FALSE
+  error = FALSE,
+  results = "asis"
 )
 ```
+<style>
+table {
+  width: 100%;
+  table-layout: fixed;
+  border-collapse: collapse;
+}
 
+th, td {
+  white-space: normal !important;
+  word-wrap: break-word;
+  overflow-wrap: break-word;
+  vertical-align: top;
+  padding: 4px;
+}
+</style>
+
+  
 ```{r}
 library(here)
 library(dplyr)
@@ -509,7 +522,6 @@ run_gamma_fullfit_problem_table <- function(datas,
       n_rank_deficient = sum(rank_deficient %in% TRUE, na.rm = TRUE),
       n_term_dropped = sum(term_dropped %in% TRUE, na.rm = TRUE),
       n_convergence_problem = sum(convergence_problem %in% TRUE, na.rm = TRUE),
-      n_hessian_problem = sum(hessian_problem %in% TRUE, na.rm = TRUE),
       n_boundary_re = sum(boundary_re %in% TRUE, na.rm = TRUE),
       .groups = "drop"
     ) %>%
@@ -542,8 +554,20 @@ fullfit_problems_gamma <- run_gamma_fullfit_problem_table(
 # =========================================================
 
 # Gesamtvergleich nWords vs nLetters
-fullfit_problems_normal$overall_table
-fullfit_problems_gamma$overall_table
+#fullfit_problems_normal$overall_table
+#fullfit_problems_gamma$overall_table
+
+
+knitr::kable(
+  fullfit_problems_normal$overall_table,
+  format = "html",
+  table.attr = 'style="width:100%; table-layout: fixed;"'
+)
+knitr::kable(
+  fullfit_problems_gamma$overall_table,
+  format = "html",
+  table.attr = 'style="width:100%; table-layout: fixed;"'
+)
 
 # Nach Experiment getrennt
 # fullfit_problems_normal$summary_table
@@ -553,8 +577,8 @@ fullfit_problems_gamma$overall_table
 # fullfit_problems_normal$detail_table
 # fullfit_problems_gamma$detail_table
 ```
-Voller fit sieht bereits Rank Deficiencies bei nWords im Normal und Gamma. 
 
+<br><br>
 
 Überprüfung der Modellfits - Topic LOO
 lme4:
@@ -863,20 +887,20 @@ loo_problems_normal <- run_lme4_loo_problem_table(
   seed = 123
 )
 
-loo_problems_lognormal <- run_lme4_loo_problem_table(
-  datas = dfs_length_models,
-  rt = "FRT",
-  response_type = "log",
-  participant_frac = 1,
-  seed = 123
-)
+#loo_problems_lognormal <- run_lme4_loo_problem_table(
+#  datas = dfs_length_models,
+#  rt = "FRT",
+#  response_type = "log",
+#  participant_frac = 1,
+#  seed = 123
+#)
 
 # =========================================================
 # Wichtige Calls
 # =========================================================
 
 # Gesamtvergleich nWords vs nLetters
-loo_problems_normal$overall_table
+#loo_problems_normal$overall_table
 #loo_problems_lognormal$overall_table
 
 # Nach Experiment getrennt
@@ -886,7 +910,16 @@ loo_problems_normal$overall_table
 # Detailtabelle aller Splits
 #loo_problems_normal$detail_table
 #loo_problems_lognormal$detail_table
+
+knitr::kable(
+  loo_problems_normal$overall_table,
+  format = "html",
+  table.attr = 'style="width:100%; table-layout: fixed;"'
+)
+
 ```
+
+<br><br>
 Gamma: 
 ```{r}
 library(dplyr)
@@ -1193,14 +1226,19 @@ loo_problems_gamma <- run_gamma_loo_problem_table(
 # Wichtige Calls
 # =========================================================
 
-loo_problems_gamma$overall_table
+#loo_problems_gamma$overall_table
 #loo_problems_gamma$summary_table
 #loo_problems_gamma$detail_table
+
+knitr::kable(
+  loo_problems_gamma$overall_table,
+  format = "html",
+  table.attr = 'style="width:100%; table-layout: fixed;"'
+)
 ```
-Obwohl nWords in mehreren Analysen mit stabileren Condition-Effekten verbunden war, erwies sich der Term über viele Resamples hinweg wiederholt als nicht identifizierbar. Da nLetters in derselben Modellfamilie numerisch deutlich stabiler schätzbar war, wurde nLetters als konservativere und methodisch besser identifizierbare Längenkovariate bevorzugt.
 
 
-
+<br><br>
 
 
 Spline Analyse nLetters
@@ -1393,6 +1431,19 @@ extract_condition_effects_gam <- function(dfs_length, k = 5) {
 
 ```{r}
 res_condition <- extract_condition_effects_gam(dfs_length, k = 5)
-res_condition
+res_condition2 <- res_condition[-length(res_condition)]
+
+for (nm in names(res_condition2)) {
+  cat("###", nm, "\n\n")
+  
+  print(
+    knitr::kable(
+      res_condition2[[nm]],
+      format = "html",
+      table.attr = 'style="width:100%; table-layout: fixed; word-wrap: break-word;"'
+    )
+  )
+  
+  cat("<br><br>\n")
+}
 ```
-EDF bei nWords und nLetters oft um 1 rum, wir riskieren überanpassung ohne deutlichen gewinn. 

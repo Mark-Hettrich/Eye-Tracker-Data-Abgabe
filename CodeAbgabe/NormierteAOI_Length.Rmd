@@ -3,6 +3,31 @@ title: "NormierteAOI_Length"
 output: html_document
 ---
 
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+  echo = FALSE,
+  warning = FALSE,
+  message = FALSE,
+  error = FALSE,
+  results = "asis"
+)
+```
+<style>
+table {
+  width: 100%;
+  table-layout: fixed;
+  border-collapse: collapse;
+}
+
+th, td {
+  white-space: normal !important;
+  word-wrap: break-word;
+  overflow-wrap: break-word;
+  vertical-align: top;
+  padding: 4px;
+}
+</style>
+
 ```{r}
 library(here)
 library(dplyr)
@@ -35,6 +60,7 @@ INC   <- INC   %>% dplyr::filter(!is.na(FRT), FRT > 0)
 
 
 Nötig für Normierung
+
 1. Prüfung: Beziehung auf Originalskala ist näherungsweise proportional und geht grob durch 0
 
 2. Prüfen, ob nach Normierung noch ein Längeneffekt bleibt
@@ -46,7 +72,7 @@ Wenn length nach Normierung immer noch Fit bringt, ist die Normierung nicht saub
 
 
 Wir testen anahnd der plausiblen Familie: Gamma log link
-
+<br><br>
 Normierung 1) 
 ```{r}
 library(dplyr)
@@ -272,8 +298,17 @@ norm_origin_summary_table <- dplyr::bind_rows(
   dplyr::arrange(length_var)
 
 # Haupttabellen
-norm_origin_detail_table
-norm_origin_summary_table
+knitr::kable(
+  norm_origin_detail_table,
+  format = "html",
+  table.attr = 'style="width:100%; table-layout: fixed;"'
+)
+knitr::kable(
+  norm_origin_summary_table,
+  format = "html",
+  table.attr = 'style="width:100%; table-layout: fixed;"'
+)
+
 
 # AOIs, bei denen Ursprung grob plausibel ist
 #norm_origin_detail_table %>%
@@ -287,11 +322,7 @@ norm_origin_summary_table
 #norm_origin_detail_table %>%
 #  dplyr::filter(verdict == "nicht beurteilbar")
 ```
-Methodik
-Zur Beurteilung der Normierung wurde für jede AOI auf der Originalskala geprüft, ob die mittlere Lesezeit näherungsweise proportional zur jeweiligen Längenvariable verläuft und ob eine Gerade durch den Ursprung dafür ausreicht. Dazu wurden auf Zellebene, also aggregiert über Topic × condition und, falls vorhanden, zusätzlich speaker, zwei lineare Modelle verglichen: ein freies Modell mit Intercept und Steigung sowie ein auf den Ursprung beschränktes Modell. Als zentrale Heuristik diente das Verhältnis der Fitfehler beider Modelle, rmse_ratio_zero_vs_free = RMSE_zero / RMSE_free. Werte bis 1.05 wurden als „Ursprung plausibel“, Werte über 1.05 bis 1.15 als „grenzwertig“ und Werte über 1.15 als „spricht gegen Normierung“ eingeordnet. Zusätzlich wurde der freie Intercept betrachtet, weil ein großer Intercept gegen eine saubere Proportionalitätsannahme durch den Ursprung spricht.
-
-Ergebniss: 
-Für nLetters waren alle 22 AOIs beurteilbar. Davon wurden 6 AOIs, also 27.3%, als mit dem Ursprung vereinbar eingestuft, 4 AOIs als grenzwertig und 12 AOIs, also mehr als die Hälfte, als gegen die Normierung sprechend. Auch die mittlere RMSE-Ratio von 1.3008 und der Median von 1.2030 zeigen, dass das Ursprungsmodell im Mittel deutlich schlechter passte als das freie Modell. Für nWords waren nur 16 von 22 AOIs beurteilbar, 6 AOIs waren nicht beurteilbar. Unter den beurteilbaren AOIs wurden ebenfalls 6 AOIs als plausibel eingestuft, entsprechend 37.5%, 6 als grenzwertig und 4 als gegen die Normierung sprechend. Die mittlere RMSE-Ratio von 1.1215 und der Median von 1.1038 fallen günstiger aus als bei nLetters. Insgesamt ergibt sich damit für diesen ersten Check ein gemischtes Bild, wobei nWords relativ besser abschneidet als nLetters, die proportionale Annahme durch den Ursprung aber auch für nWords nicht durchgängig gestützt wird.
+<br><br>
 
 Normierung 2
 ```{r}
@@ -612,8 +643,22 @@ norm_beta0_summary_table <- dplyr::bind_rows(
   dplyr::arrange(length_var)
 
 # Haupttabellen
-norm_beta0_detail_table
-norm_beta0_summary_table
+
+
+
+knitr::kable(
+  norm_beta0_detail_table %>% select(exp, AOI, n_distinct_log_length, term_estimable, log_length_estimate, log_length_ci_lower_95, log_length_ci_upper_95, ci_contains_0),
+  format = "html",
+  table.attr = 'style="width:100%; table-layout: fixed;"'
+)
+
+knitr::kable(
+  norm_beta0_summary_table,
+  format = "html",
+  table.attr = 'style="width:100%; table-layout: fixed;"'
+)
+
+
 
 # AOIs, bei denen nach Normierung kein klarer Restlängeneffekt bleibt
 #norm_beta0_detail_table %>%
@@ -637,19 +682,7 @@ norm_beta0_summary_table
 #    !fit_ok_free | term_estimable %in% FALSE
 #  )
 ```
-Methodik
-Im zweiten Check wurde geprüft, ob nach der Normierung noch ein zusätzlicher Längeneffekt bestehen bleibt. Dazu wurde für jede AOI ein Gamma-Modell mit Log-Link für die normierte Zielvariable  rt_norm=rt/length geschätzt, wobei condition und, falls relevant, speaker sowie Random Intercepts für Topic und Participant berücksichtigt wurden. Zusätzlich wurde log_length als 
-fester Effekt in das Modell aufgenommen. Die entscheidende Idee ist: Wenn die Normierung sauber wäre, sollte log_length nach 
-der Division keinen systematischen zusätzlichen Beitrag mehr leisten. Als Heuristik wurde deshalb geprüft, ob das 95%-Konfidenzintervall des Koeffizienten für log_length die 0 enthält. Enthält das Intervall die 0, spricht das gegen einen klaren Restlängeneffekt und damit eher für eine gelungene Normierung. Enthält es die 0 nicht, bleibt nach der Normierung noch systematische Längeninformation bestehen. Zusätzlich wurden Schätzbarkeit des Terms und die absolute Distanz des Koeffizienten 
-zu 0 betrachtet.
-
-Ergebnis
-
-Für nLetters konnten in allen 22 AOIs Modelle geschätzt werden, und der Term log_length war in allen 22 AOIs estimierbar. Allerdings enthielt das 95%-Konfidenzintervall nur in 8 von 22 AOIs, also in 36.4%, die 0. In der Mehrzahl der AOIs blieb 
-damit trotz Normierung ein klarer Restlängeneffekt bestehen. Für nWords liefen ebenfalls in allen 22 AOIs die Modellfits, aber log_length war nur in 15 AOIs estimierbar, in 7 AOIs also nicht separat beurteilbar. Von den 15 estimierbaren AOIs enthielten 
-8, also 53.3%, ein Konfidenzintervall mit 0. Relativ betrachtet schneidet nWords in diesem Check damit günstiger ab als 
-nLetters, weil unter den beurteilbaren AOIs häufiger kein klarer Restlängeneffekt nachweisbar war. Gleichzeitig ist das Bild
-auch für nWords nicht überzeugend sauber, da selbst dort in fast der Hälfte der estimierbaren AOIs weiterhin ein systematischer Längeneffekt verbleibt. Insgesamt spricht dieser Check daher gegen eine durchgängig gelungene proportionale Normierung, wobei nWords hier eher günstiger wirkt als nLetters.
+<br><br>
 
 
 Normierung 3
@@ -980,10 +1013,18 @@ norm_delta_aic_compare <- norm_delta_aic_detail_table %>%
 # OUTPUTS
 # =========================================================
 
-norm_delta_aic_detail_table
-norm_delta_aic_summary_table
-norm_delta_aic_compare
 
+
+knitr::kable(
+  norm_delta_aic_detail_table %>% select(exp, AOI, length_var, aic_free, aic_reduced, delta_AIC_reduced_minus_free) ,
+  format = "html",
+  table.attr = 'style="width:100%; table-layout: fixed;"'
+)
+knitr::kable(
+  norm_delta_aic_summary_table,
+  format = "html",
+  table.attr = 'style="width:100%; table-layout: fixed;"'
+)
 # AOIs, bei denen das reduzierte Modell besser ist
 #norm_delta_aic_detail_table %>%
 #  dplyr::filter(
@@ -1006,20 +1047,4 @@ norm_delta_aic_compare
 #  )
 ```
 
-Methodik
-Im dritten Check wurde geprüft, ob die jeweilige Längenvariable nach der Normierung noch zusätzlichen Modellfit liefert. Dazu wurden für jede AOI zwei Gamma-Modelle mit Log-Link für die normierte Zielvariable 
-rtnorm=rt/lengthv erglichen: ein reduziertes Modell ohne zusätzlichen Längenterm und ein freies Modell mit zusätzlichem 
-linearem Term für length_value. Die übrige Modellstruktur blieb identisch und umfasste condition, gegebenenfalls speaker sowie Random Intercepts für Topic und Participant. Für den Vergleich wurde  ΔAIC=AIC(reduced)−AIC(free) berechnet. Negative Werte bedeuten, dass das reduzierte Modell bevorzugt wird, also der zusätzliche Längenterm nach der Normierung keinen ausreichenden Mehrwert liefert. Positive Werte bedeuten dagegen, dass das freie Modell besser passt, sodass nach der Normierung weiterhin relevante Längeninformation im Modell verbleibt. Die Auswertung erfolgte hier primär über das Vorzeichen von 
-ΔAIC, ergänzt durch Mittelwert und Median der Differenzen.
-
-Ergebnis
-Für nLetters waren alle 22 AOIs vergleichbar. Davon zeigten nur 5 AOIs, also 22.7%, einen negativen 
-ΔAIC-Wert, während 17 AOIs, also 77.3%, einen positiven Wert aufwiesen. Damit sprach in der deutlichen Mehrzahl der AOIs das freie Modell mit zusätzlichem Längenterm für einen besseren Fit, was gegen eine saubere Normierung mit nLetters spricht. Dieses Bild wird durch den mittleren  ΔAIC-Wert von 6.4282 und den Median von 2.6124 zusätzlich gestützt, die beide im positiven 
-Bereich liegen und auf einen systematischen Restlängeneffekt nach der Normierung hindeuten. Für nWords waren 15 von 22 AOIs vergleichbar. Von diesen 15 AOIs zeigten 7, also 46.7%, einen negativen  AIC-Wert und 8 AOIs, also 53.3%, einen positiven Wert. Das Ergebnis fällt damit deutlich gemischter aus als bei nLetters. Zugleich sind der mittlere  ΔAIC-Wert von 1.1961 und der Median von 0.1045 nur leicht positiv, sodass der zusätzliche 
-Längenterm bei nWords im Durchschnitt nur einen geringen Zusatzfit liefert. Insgesamt spricht dieser Check klarer gegen 
-nLetters als gegen nWords. Auch für nWords bleibt das Bild nicht vollständig überzeugend, nWords schneidet jedoch deutlich günstiger ab als nLetters und erscheint damit als die geeignetere Normierungsbasis.
-
-
-
-Fazit: Während beide Normierungen nicht tragen, ist die verletzung der Annahmen welche wir haben 
 
