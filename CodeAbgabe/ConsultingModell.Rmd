@@ -1,5 +1,5 @@
 ---
-title: "ConsultingModell"
+title: "TRT.WD: Residuals Gamma vs. Normal"
 output: html_document
 ---
 
@@ -8,9 +8,25 @@ knitr::opts_chunk$set(
   echo = FALSE,
   warning = FALSE,
   message = FALSE,
-  error = FALSE
+  error = FALSE,
+  results = "asis"
 )
 ```
+<style>
+table {
+  width: 100%;
+  table-layout: fixed;
+  border-collapse: collapse;
+}
+
+th, td {
+  white-space: normal !important;
+  word-wrap: break-word;
+  overflow-wrap: break-word;
+  vertical-align: top;
+  padding: 4px;
+}
+</style>
 
 ```{r}
 library(here)
@@ -33,7 +49,7 @@ CS    <- readRDS(here("prepped Data", "CS.rds"))
 INC   <- readRDS(here("prepped Data", "INC.rds"))
 ```
 
-FRT.WD Residuals vs Fitted
+**FRT.WD Residuals vs Fitted**
 ```{r}
 library(dplyr)
 library(purrr)
@@ -395,19 +411,23 @@ all_trtwd_plots <- extract_all_plots(res_trtwd_residplots)
 # =========================================================
 
 # 1) Alle Plots liegen hier drin:
-all_trtwd_plots
+for (p in all_trtwd_plots) {
+  print(p)
+}
 
 # 2) Einen konkreten Plot extrahieren:
-# get_aoi_plot(res_trtwd_residplots, experiment = "c_bed", aoi = "1")
+# get_aoi_plot(res_trtwd_residplots, experiment = "n_bed", aoi = "1")
 
 # 3) Ganzes Ergebnis für einen Fall:
-# tmp <- get_aoi_result(res_trtwd_residplots, experiment = "c_bed", aoi = "1")
+# tmp <- get_aoi_result(res_trtwd_residplots, experiment = "n_bed", aoi = "1")
 # tmp$n_obs
 # tmp$fit_normal
 # tmp$fit_gamma
 # tmp$plot_data_normal
 # tmp$plot_data_gamma
 # tmp$plot
+
+
 ```
 
 

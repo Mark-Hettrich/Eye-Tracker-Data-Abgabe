@@ -3,6 +3,31 @@ title: "NormierteAOI_Familie"
 output: html_document
 ---
 
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+  echo = FALSE,
+  warning = FALSE,
+  message = FALSE,
+  error = FALSE,
+  results = "asis"
+)
+```
+<style>
+table {
+  width: 100%;
+  table-layout: fixed;
+  border-collapse: collapse;
+}
+
+th, td {
+  white-space: normal !important;
+  word-wrap: break-word;
+  overflow-wrap: break-word;
+  vertical-align: top;
+  padding: 4px;
+}
+</style>
+
 ```{r}
 library(here)
 library(dplyr)
@@ -35,12 +60,8 @@ INC    <- INC    %>% dplyr::filter(!is.na(FRT), FRT > 0)
 ```
 
 
-Wir starten mit den Modellen, welche bei singleAOIs mit nLetters als linearer Prädiktor erfolgreich waren: normal, Gamma und NegBin2
+<br><br>
 
-
-Wir lassen die .WD Modelle gegeneinander antreten.
-Ziel: Sieger, an dem wir dann stabilität des condition schätzers vergleichen können. 
-Und Tabelle, welche die Condition Schätzer innerhalb einer AOI vergleicht. 
 
 
 Full Data Fit: FRT
@@ -368,13 +389,28 @@ res_frtwd_full_fit <- run_frtwd_full_fit_screen(dfs)
 # OUTPUTS
 # =========================================================
 
-round_df_4(res_frtwd_full_fit$full_fit_table)
+#round_df_4(res_frtwd_full_fit$full_fit_table)
 
-round_df_4(res_frtwd_full_fit$family_summary)
+#round_df_4(res_frtwd_full_fit$family_summary)
 
-round_df_4(res_frtwd_full_fit$dataset_family_summary)
+#round_df_4(res_frtwd_full_fit$dataset_family_summary) %>% select(-n_fit_failed)
+
+
+### Tabelle Knitready
+knitr::kable(
+  round_df_4(res_frtwd_full_fit$family_summary),
+  format = "html",
+  table.attr = 'style="width:100%; table-layout: fixed;"'
+)
+
+knitr::kable(
+  round_df_4(res_frtwd_full_fit$dataset_family_summary) %>% select(-n_fit_failed),
+  format = "html",
+  table.attr = 'style="width:100%; table-layout: fixed;"'
+)
 ```
-normal wird einmal singular, sonst nichts
+<br><br>
+
 
 Full Data Fit TRT
 ```{r}
@@ -701,13 +737,20 @@ res_trtwd_full_fit <- run_trtwd_full_fit_screen(dfs)
 # OUTPUTS
 # =========================================================
 
-round_df_4(res_trtwd_full_fit$full_fit_table)
+#round_df_4(res_trtwd_full_fit$full_fit_table)
 
-round_df_4(res_trtwd_full_fit$family_summary)
+knitr::kable(
+  round_df_4(res_trtwd_full_fit$family_summary),
+  format = "html",
+  table.attr = 'style="width:100%; table-layout: fixed;"'
+)
 
-round_df_4(res_trtwd_full_fit$dataset_family_summary)
+#round_df_4(res_trtwd_full_fit$dataset_family_summary)
+
+
 ```
-Normal wird hier 3x singular. Sonst keine Probleme
+<br><br>
+
 
 Topic LOO - FRT
 ```{r}
@@ -1170,13 +1213,30 @@ res_frtwd_topicloo_fit <- run_frtwd_topicloo_fit_screen(dfs)
 
 #round_df_4(res_frtwd_topicloo_fit$topicloo_fit_table)
 
-round_df_4(res_frtwd_topicloo_fit$family_summary)
 
-round_df_4(res_frtwd_topicloo_fit$dataset_family_summary)
 
-round_df_4(res_frtwd_topicloo_fit$dataset_aoi_family_summary)
+#round_df_4(res_frtwd_topicloo_fit$dataset_family_summary) 
+
+
+
+
+
+knitr::kable(
+  round_df_4(res_frtwd_topicloo_fit$family_summary),
+  format = "html",
+  table.attr = 'style="width:100%; table-layout: fixed;"'
+)
+
+knitr::kable(
+  round_df_4(res_frtwd_topicloo_fit$dataset_aoi_family_summary) %>% select(-n_folds, -n_fit_failed, -n_nonposdef_hessian, -n_nonzero_convergence, -n_singular, -n_with_warning),
+  format = "html",
+  table.attr = 'style="width:100%; table-layout: fixed;"'
+)
+
+
 ```
-Normal wird 14x Singular, Gamma hat eine Warnung: failed to invert Hessian from numDeriv
+<br><br>
+
 
 Topic LOO - TRT
 ```{r}
@@ -1637,18 +1697,34 @@ res_trtwd_topicloo_fit <- run_trtwd_topicloo_fit_screen(dfs)
 # OUTPUTS
 # =========================================================
 
-round_df_4(res_trtwd_topicloo_fit$topicloo_fit_table)
+#round_df_4(res_trtwd_topicloo_fit$topicloo_fit_table)
 
-round_df_4(res_trtwd_topicloo_fit$family_summary)
+#round_df_4(res_trtwd_topicloo_fit$family_summary) %>% select(family, n_folds, n_nonposdef_hessian, n_nonzero_convergence, #n_singular, n_with_warning)
 
-round_df_4(res_trtwd_topicloo_fit$dataset_family_summary)
+#round_df_4(res_trtwd_topicloo_fit$dataset_family_summary)
 
-round_df_4(res_trtwd_topicloo_fit$dataset_aoi_family_summary)
+#round_df_4(res_trtwd_topicloo_fit$dataset_aoi_family_summary) %>% select(-n_folds, -n_fit_failed, -n_nonposdef_hessian, #-n_nonzero_convergence, -n_singular, -n_with_warning)
+
+
+
+
+knitr::kable(
+  round_df_4(res_trtwd_topicloo_fit$family_summary) %>% select(family, n_folds, n_nonposdef_hessian, n_nonzero_convergence, n_singular, n_with_warning),
+  format = "html",
+  table.attr = 'style="width:100%; table-layout: fixed;"'
+)
+
+knitr::kable(
+  round_df_4(res_trtwd_topicloo_fit$dataset_aoi_family_summary) %>% select(-n_folds, -n_fit_failed, -n_nonposdef_hessian, -n_nonzero_convergence, -n_singular, -n_with_warning),
+  format = "html",
+  table.attr = 'style="width:100%; table-layout: fixed;"'
+)
 ```
-Keine Großen Unterschiede in Prädiktionsgüte, normal generell bisschen schwächer. Allerdings wird normal 15x Singular. 
+<br><br>
 
 
-DHARMa Tests
+
+
 FRT DHARMa checks
 ```{r}
 library(dplyr)
@@ -2263,8 +2339,9 @@ res_frt_residuals <- run_frt_residual_analysis(
 
 #round_df_4(res_frt_residuals$residual_summary)
 ```
+
 ```{r}
-round_df_4(res_frt_residuals$problem_counts)
+
 residual_table_problems_only <- res_frt_residuals$residual_summary %>%
   dplyr::select(
     dataset,
@@ -2280,9 +2357,22 @@ residual_table_problems_only <- res_frt_residuals$residual_summary %>%
   dplyr::arrange(dataset, AOI, family) %>%
   round_df_4()
 
-residual_table_problems_only
+
+
+knitr::kable(
+  round_df_4(res_frt_residuals$problem_counts),
+  format = "html",
+  table.attr = 'style="width:100%; table-layout: fixed;"'
+)
+
+knitr::kable(
+  residual_table_problems_only,
+  format = "html",
+  table.attr = 'style="width:100%; table-layout: fixed;"'
+)
 ```
-Normal hat die schlechteste Anpassung nach DHARMa, Gamma und NegBin2 aber auch nicht unproblematisch.
+<br><br>
+
 
 TRT DHARMa
 ```{r}
@@ -2880,7 +2970,7 @@ res_trtwd_residuals <- run_trtwd_residual_analysis(
 # TABELLEN
 # =========================================================
 
-round_df_4(res_trtwd_residuals$problem_counts)
+
 
 residual_table_problems_only <- res_trtwd_residuals$residual_summary %>%
   dplyr::select(
@@ -2897,9 +2987,20 @@ residual_table_problems_only <- res_trtwd_residuals$residual_summary %>%
   dplyr::arrange(dataset, AOI, family) %>%
   round_df_4()
 
-residual_table_problems_only
+knitr::kable(
+  round_df_4(res_trtwd_residuals$problem_counts),
+  format = "html",
+  table.attr = 'style="width:100%; table-layout: fixed;"'
+)
+
+knitr::kable(
+  residual_table_problems_only,
+  format = "html",
+  table.attr = 'style="width:100%; table-layout: fixed;"'
+)
 ```
-Wir sehen hier deutlichen Vorteil von NegBin2 und Gamma, nur Normal hat Probleme. Wir elimieren also Normal 
+<br><br>
+
 
 
 
@@ -3208,19 +3309,28 @@ rrtwd_family_summary <- rrtwd_decision_table %>%
 # =========================================================
 # OUTPUTS
 # =========================================================
-fit_info_table_rrtwd
-rrtwd_fit_overview
-rrtwd_decision_table
-rrtwd_best_per_cell
-rrtwd_family_summary
+#fit_info_table_rrtwd
+#rrtwd_fit_overview
+#rrtwd_decision_table
+#rrtwd_best_per_cell
+#rrtwd_family_summary
+
+
+
+
+knitr::kable(
+  rrtwd_family_summary,
+  format = "html",
+  table.attr = 'style="width:100%; table-layout: fixed;"'
+)
+
 ```
-Hier ein Hessian problem bei negBin, AIC aber auch besser. 
-Also wieder kein Tie Break. .WD ist anscheinend numerisch stabiler
+<br><br>
 
 
 
 
-Wir schauen uns Participant LOO auf RRT.WD an, um entscheidung zu treffen:
+Participant LOO auf RRT.WD
 ```{r}
 library(dplyr)
 library(tidyr)
@@ -3792,15 +3902,27 @@ res_rrtwd_participantloo_fit <- run_rrtwd_participantloo_fit_screen(dfs)
 # OUTPUTS
 # =========================================================
 
-round_df_4(res_rrtwd_participantloo_fit$participantloo_fit_table)
+#round_df_4(res_rrtwd_participantloo_fit$participantloo_fit_table)
 
-round_df_4(res_rrtwd_participantloo_fit$family_summary)
 
-round_df_4(res_rrtwd_participantloo_fit$dataset_family_summary)
 
-round_df_4(res_rrtwd_participantloo_fit$dataset_aoi_family_summary)
+# round_df_4(res_rrtwd_participantloo_fit$dataset_family_summary)
+
+
+knitr::kable(
+  round_df_4(res_rrtwd_participantloo_fit$family_summary) %>%  select(-mean_mae, -median_mae, -mean_rmse, -median_rmse, -mean_abs_zero_diff, -median_abs_zero_diff, -mean_aic, -median_aic, -n_fit_failed),
+  format = "html",
+  table.attr = 'style="width:100%; table-layout: fixed;"'
+)
+
+knitr::kable(
+  round_df_4(res_rrtwd_participantloo_fit$dataset_aoi_family_summary)  %>% select(-n_fit_failed, -n_nonposdef_hessian, -n_nonzero_convergence, -n_cond_rank_deficient, -n_zi_rank_deficient, -mean_aic, -median_aic),
+  format = "html",
+  table.attr = 'style="width:100%; table-layout: fixed;"'
+)
 ```
-NegBin2 ist numerisch stabiler, wir bemerken vor allem den starken unterschied zu der unnormierten Variante. 
+
+
 
 
 

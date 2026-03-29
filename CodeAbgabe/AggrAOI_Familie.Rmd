@@ -8,9 +8,25 @@ knitr::opts_chunk$set(
   echo = FALSE,
   warning = FALSE,
   message = FALSE,
-  error = FALSE
+  error = FALSE,
+  results = "asis"
 )
 ```
+<style>
+table {
+  width: 100%;
+  table-layout: fixed;
+  border-collapse: collapse;
+}
+
+th, td {
+  white-space: normal !important;
+  word-wrap: break-word;
+  overflow-wrap: break-word;
+  vertical-align: top;
+  padding: 4px;
+}
+</style>
 
 ```{r}
 library(here)
@@ -33,6 +49,7 @@ CS      <- readRDS(here("prepped Data", "CS.rds"))
 INC      <- readRDS(here("prepped Data", "INC.rds"))
 ```
 
+<br><br>
 ```{r}
 c_bed <- c_bed %>% dplyr::filter(!is.na(FRT), FRT > 0)
 c_ein <- c_ein %>% dplyr::filter(!is.na(FRT), FRT > 0)
@@ -41,7 +58,7 @@ n_ein <- n_ein %>% dplyr::filter(!is.na(FRT), FRT > 0)
 CS    <- CS    %>% dplyr::filter(!is.na(FRT), FRT > 0)
 INC    <- INC    %>% dplyr::filter(!is.na(FRT), FRT > 0)
 ```
-
+<br><br>
 
 Wir fangen wiedr mit Poisson an, den können wir schnell belegen oder wiederlegen.
 ```{r}
@@ -396,14 +413,30 @@ res_overdisp <- run_overdispersion_all(
 # OUTPUTS
 # =========================================================
 
-res_overdisp$fit_details_all
-res_overdisp$fit_summary_all
+#res_overdisp$fit_details_all
+#res_overdisp$fit_summary_all
+
+knitr::kable(
+  res_overdisp$fit_details_all %>% select(experiment, aggr_level, dispersion_ratio,chisq_statistic, overdispersed_0_05 ),
+  format = "html",
+  table.attr = 'style="width:100%; table-layout: fixed;"'
+)
+
+knitr::kable(
+  res_overdisp$fit_summary_all %>% select(experiment, n_clusters, n_overdispersed_0_05, mean_dispersion_ratio,median_dispersion_ratio),
+  format = "html",
+  table.attr = 'style="width:100%; table-layout: fixed;"'
+)
+
+
+
 ```
-Die Ergebnisse der Vorprüfung zeigen für sämtliche AOI-Cluster eine ausgeprägte Overdispersion der Poisson-Modelle. Die geschätzten Dispersionsverhältnisse lagen in allen Fällen sehr deutlich über dem Referenzwert 1, und alle Tests fielen hochsignifikant aus. Damit wird ersichtlich, dass die Varianz der beobachteten FRT-Werte durch ein Poisson-Modell systematisch und in erheblichem Ausmaß unterschätzt wird. Poisson-Modelle wurden deshalb für FRT nicht weiter als geeignete Kandidaten berücksichtigt. Stattdessen spricht die Befundlage dafür, im weiteren Modellvergleich Verteilungen für positive stetige Daten, insbesondere Gamma- oder lognormale Modelle, heranzuziehen.
+
+<br><br>
 
 
 
-NegBin1 vs NegBin2, Topic LOO
+*NegBin1 vs NegBin2, Topic LOO*
 ```{r}
 library(dplyr)
 library(tidyr)
@@ -920,17 +953,26 @@ res_nb_compare <- run_nb1_nb2_compare_all(
 #round_df_4(res_nb_compare$topicloo_fit_summary_cluster)
 
 # Topic-LOO: AOI-spezifische Prediction plus korrekt gezählte Fitprobleme
-round_df_4(res_nb_compare$topicloo_summary) %>% select(experiment, family_name, AOI, aggr_level, n_warning)
+#round_df_4(res_nb_compare$topicloo_summary) %>% select(experiment, family_name, AOI, aggr_level, n_warning)
 
 # Direkter Topic-LOO Vergleich
 #round_df_4(res_nb_compare$topicloo_comparison)
 
 # Knappe Zusammenfassung pro Experiment
-round_df_4(res_nb_compare$compact_experiment)
-```
-Die Ergebnisse zeigen keine durchgängig eindeutige Überlegenheit einer der beiden Negativ-Binomial-Parametrisierungen. Zwar erzielt NB1 in einzelnen Experimenten niedrigere RMSE- bzw. MAE-Werte, die Vorteile von NB2 fallen jedoch insbesondere für n_bed und teilweise auch für c_bed deutlicher aus. In mehreren Datensätzen sind die Unterschiede zwischen beiden Modellen zudem sehr gering, sodass nicht von einer klaren generellen Überlegenheit gesprochen werden kann. Insgesamt spricht die vergleichende Betrachtung der Vorhersagefehler daher eher für eine leichte Präferenz für NB2, auch wenn dieser Befund nur zurückhaltend zu interpretieren ist.
+#round_df_4(res_nb_compare$compact_experiment)
 
-Fit - Probleme NegBin1 vs NegBin2
+
+
+### Tabelle Knitready
+knitr::kable(
+  round_df_4(res_nb_compare$compact_experiment),
+  format = "html",
+  table.attr = 'style="width:100%; table-layout: fixed;"'
+)
+```
+<br><br>
+
+*Fit - Probleme NegBin1 vs NegBin2*
 ```{r}
 topicloo_fit_problem_totals <- res_nb_compare$topicloo_fit_summary_cluster %>%
   group_by(family_name) %>%
@@ -946,8 +988,20 @@ topicloo_fit_problem_totals <- res_nb_compare$topicloo_fit_summary_cluster %>%
   round_df_4()
 
 topicloo_fit_problem_totals
+
+### Tabelle Extrahieren
+exp <- topicloo_fit_problem_totals
+cat(
+  knitr::kable(exp, format = "latex", booktabs = TRUE),
+  file = "meine_tabelle.tex"
+)
+knitr::kable(
+  topicloo_fit_problem_totals,
+  format = "html",
+  table.attr = 'style="width:100%; table-layout: fixed;"'
+)
 ```
-Auch unter Berücksichtigung der Modellstabilität spricht die Evidenz eher für NB2. Zwar waren bei beiden Familien alle Holdout-Fits erfolgreich, jedoch zeigte NB1 in 11 Fällen Warnungen und in einem Fall zusätzlich ein Hessian-Problem, während NB2 weder Hessian- noch Konvergenzprobleme und auch keine Warnungen aufwies. Da sich die Vorhersagegüte zuvor nicht durchgängig zugunsten von NB1 gezeigt hatte und NB2 zugleich die deutlich robustere numerische Stabilität besitzt, erscheint NB2 insgesamt als die vorzugswürdige Modellfamilie**.
+<br><br>
 
 
 
@@ -1531,20 +1585,21 @@ res_family_screen_full <- run_family_screen_full_all(
 # OUTPUTS
 # =========================================================
 
-round_df_4(res_family_screen_full$full_all)
-round_df_4(res_family_screen_full$full_summary)
-round_df_4(res_family_screen_full$full_overall)
+#round_df_4(res_family_screen_full$full_all)
+#round_df_4(res_family_screen_full$full_summary)
+
+
+#round_df_4(res_family_screen_full$full_overall)
+
+
+### Tabelle Knitready
+knitr::kable(
+  round_df_4(res_family_screen_full$full_overall) %>% select(-n_rankdef_not_clearly_consistent_with_nLetters_issue, -mean_aic, -median_aic, -n_fit_failed),
+  format = "html",
+  table.attr = 'style="width:100%; table-layout: fixed;"'
+)
 ```
-Methodik.
-Die Kandidatenfamilien wurden zunächst nicht über inhaltliche Effekte oder Gütemaße, sondern über ihre numerische Tragfähigkeit geprüft. Dafür wurden die clustergetrennten Zielmodelle auf den vollen Daten geschätzt, weil für die spätere Auswertung entscheidend ist, dass das finale Modell auf dem vollständigen Datensatz stabil und ohne technische Auffälligkeiten fitbar ist. Die feste Struktur war dabei für Mehr-AOI-Cluster AOI * condition (*speaker) + nLetters, für Single-AOI-Cluster entsprechend condition (*speaker) + nLetters, jeweils mit Random Intercepts für Topic und Participant. Verglichen wurden die Familien Gamma mit Log-Link, NegBin2 mit Log-Link, Lognormal, Inverse Gaussian, Tweedie und ein Normalmodell. Als Screening-Kriterien wurden Fitabbrüche, nicht positiv definite Hessians, Konvergenzprobleme, Fits mit Warnungen sowie die Zahl der Warning-Meldungen erfasst. Zusätzlich wurde die Identifizierbarkeit der festen Struktur familienunabhängig über die Designmatrix geprüft. Dabei wurde insbesondere kontrolliert, ob eventuelle Rangprobleme mit fehlender oder nur sehr eingeschränkter Variation in nLetters vereinbar sind. Im vorliegenden Screening traten solche Rank-Deficiencies auf den vollen Daten jedoch praktisch nicht auf, sodass dieser Punkt die Familienentscheidung nicht getragen hat.
-
-Resultate.
-Auf den vollen Daten zeigten Gamma(log) und NegBin2(log) das sauberste Bild. Beide Familien hatten über alle 13 Cluster hinweg keine Fitabbrüche, keine Hessian-Probleme, keine Konvergenzprobleme und keine Warnungen. Das ist genau die Art von numerischer Stabilität, die man für das Endmodell sehen will. 
-Inverse Gaussian fiel dagegen klar negativ auf, mit 5 nicht positiv definiten Hessians, 2 Konvergenzproblemen sowie 7 Fits mit Warnungen und insgesamt 14 Warning-Meldungen. Diese Familie ist damit numerisch deutlich instabiler und als Hauptkandidat praktisch draußen. Tweedie war besser als Inverse Gaussian, aber ebenfalls nicht vollständig sauber, mit 1 Hessian-Problem, 2 Konvergenzproblemen und 2 Fits mit Warnungen. Lognormal war insgesamt deutlich stabiler als Inverse Gaussian und Tweedie, zeigte aber immer noch 2 Hessian-Probleme und 4 Fits mit Warnungen. Damit ist Lognormal kein Totalausfall, aber auch nicht so glatt wie Gamma und NegBin2. 
-Das Normalmodell erzeugte auf den vollen Daten keine Fitabbrüche und keine Konvergenz- oder Hessian-Probleme; allerdings trat ein Singularitätsfall auf. Da zugleich keine Rank-Deficiencies auf den vollen Daten ausgewiesen wurden, liefert das Normalmodell hier zwar kein katastrophales, aber auch kein besonders überzeugendes Stabilitätsbild. Insgesamt bleiben nach dem reinen Fit-Screening auf den vollen Daten Gamma(log) und NegBin2(log) als die beiden methodisch saubersten Kandidaten übrig.
-
-
-Wir machen weiter mit: Gamma(log), NegBin2(log), Normal
+<br><br>
 
 *Wir testen numerische stabilität auf Topic-LOO*
 ```{r}
@@ -2125,15 +2180,19 @@ res_family_screen_loo <- run_family_screen_loo_all(
 # OUTPUTS
 # =========================================================
 
-round_df_4(res_family_screen_loo$loo_all)
-round_df_4(res_family_screen_loo$loo_summary)
-round_df_4(res_family_screen_loo$loo_overall)
-```
-Methodik.
-Die drei verbliebenen Familien, Gamma(log), NegBin2(log) und Normal, wurden zusätzlich in einem Topic-LOO-Schema auf ihre numerische Stabilität geprüft. Dabei wurde in jedem Schritt jeweils ein Topic aus dem entsprechenden AOI-Cluster aus dem Trainingsdatensatz entfernt und das Modell auf den verbleibenden Daten neu geschätzt. Die feste Struktur entsprach den clustergetrennten Zielmodellen, also bei Mehr-AOI-Clustern AOI * condition (*speaker) + nLetters und bei Single-AOI-Clustern entsprechend condition (*speaker) + nLetters, jeweils mit Random Intercepts für Topic und Participant. Erfasst wurden Fitabbrüche, nicht positiv definite Hessians, Konvergenzprobleme, Rank-Deficiencies, Singularität sowie Warnungen. Zusätzlich wurde die Identifizierbarkeit der festen Struktur unabhängig von der gewählten Familie über die Designmatrix geprüft, damit numerische Probleme nicht mit rein algebraischen Redundanzen der Modellmatrix verwechselt werden.
+#round_df_4(res_family_screen_loo$loo_all)
+#round_df_4(res_family_screen_loo$loo_summary)
+#round_df_4(res_family_screen_loo$loo_overall)
 
-Resultate.
-Gamma(log) und NegBin2(log) zeigten im Topic-LOO-Screening ein vollständig unauffälliges Bild. Über alle 78 Holdout-Fits hinweg traten bei beiden Familien weder Fitabbrüche noch Hessian- oder Konvergenzprobleme, noch Rank-Deficiencies, Singularität oder Warnungen auf. Das Normalmodell zeigte ebenfalls keine Fitabbrüche, keine Hessian- oder Konvergenzprobleme und keine Rank-Deficiencies, allerdings 9 singuläre Fits sowie eine zusätzliche Warnung mit dem Inhalt, dass das Modell nicht konvergierte. Auch wenn diese Auffälligkeiten im Vergleich zu deutlich instabileren Familien moderat bleiben, erreicht das Normalmodell damit nicht dieselbe numerische Glätte wie Gamma(log) und NegBin2(log). Insgesamt bestätigt das Topic-LOO-Screening daher, dass Gamma(log) und NegBin2(log) die robustesten Kandidaten sind, während das Normalmodell zwar grundsätzlich fitbar bleibt, aber ein etwas weniger stabiles Profil zeigt.
+
+### Tabelle Knitready
+knitr::kable(
+  round_df_4(res_family_screen_loo$loo_overall) %>% select(-n_rankdef_consistent_with_nLetters_issue, -n_rankdef_not_clearly_consistent_with_nLetters_issue,-prop_fit_failed,-n_fit_failed),
+  format = "html",
+  table.attr = 'style="width:100%; table-layout: fixed;"'
+)
+```
+<br><br>
 
 
 *Wir checken auch TRT, falls wir Familien hier weiter reduzieren  können. (inkl LOO)*
@@ -2806,19 +2865,24 @@ res_family_screen_trt <- run_family_screen_trt_all(
 # OUTPUTS
 # =========================================================
 
-round_df_4(res_family_screen_trt$full_all)
-round_df_4(res_family_screen_trt$full_summary)
-round_df_4(res_family_screen_trt$full_overall)
+#round_df_4(res_family_screen_trt$full_all)
+#round_df_4(res_family_screen_trt$full_summary)
+#round_df_4(res_family_screen_trt$full_overall)
 
-round_df_4(res_family_screen_trt$loo_all)
-round_df_4(res_family_screen_trt$loo_summary)
-round_df_4(res_family_screen_trt$loo_overall)
+#round_df_4(res_family_screen_trt$loo_all)
+#round_df_4(res_family_screen_trt$loo_summary)
+
+#round_df_4(res_family_screen_trt$loo_overall)
+
+
+### Tabelle Knitready
+knitr::kable(
+  round_df_4(res_family_screen_trt$loo_overall) %>% select(-n_rankdef_consistent_with_nLetters_issue, -n_rankdef_not_clearly_consistent_with_nLetters_issue,-prop_fit_failed, -n_fit_failed ),
+  format = "html",
+  table.attr = 'style="width:100%; table-layout: fixed;"'
+)
 ```
-Keine probleme außer Normal singularities
-
-
-Wir machen weiter.
-
+<br><br>
 
 
 *Predicition über Topic - LOO*
@@ -3315,16 +3379,24 @@ res_prediction_frt <- run_prediction_all(
 # OUTPUTS
 # =========================================================
 
-round_df_4(res_prediction_frt$preds_raw_all)
-round_df_4(res_prediction_frt$prediction_summary_all)
-round_df_4(res_prediction_frt$prediction_comparison_all)
-round_df_4(res_prediction_frt$compact_summary_all)
-```
-Methodik.
-Für FRT wurde die prädiktive Leistung der drei verbliebenen Familien, Gamma(log), NegBin2(log) und Normal, in einem Topic-LOO-Schema verglichen. In jedem Schritt wurde ein Topic vollständig aus dem Trainingsdatensatz entfernt, das Modell auf den verbleibenden Daten neu geschätzt und anschließend auf den Beobachtungen des ausgelassenen Topics vorhergesagt. Die Modelle wurden wieder clustergetrennt gefittet, also bei Mehr-AOI-Clustern mit AOI * condition (*speaker) + nLetters und bei Single-AOI-Clustern mit condition (*speaker) + nLetters, jeweils mit Random Intercepts für Topic und Participant. Die Vorhersagen wurden konsequent population-level berechnet, also ohne Random Effects, damit der Holdout-Fall für ein neues Topic sauber definiert ist. Als Gütemaße wurden RMSE und MAE auf der FRT-Skala ausgewertet, zunächst AOI-spezifisch und anschließend in kompakter Form pro Experiment zusammengefasst.
+#round_df_4(res_prediction_frt$preds_raw_all)
+#round_df_4(res_prediction_frt$prediction_summary_all)
 
-Resultate.
-Auch im prädiktiven Vergleich liegen Gamma(log) und NegBin2(log) praktisch exakt gleichauf. Sowohl auf AOI-Ebene als auch in den experimentweisen Zusammenfassungen unterscheiden sich RMSE und MAE nur in vernachlässigbaren Größenordnungen. Daraus ergibt sich erneut keine sinnvolle Trennschärfe zwischen diesen beiden Familien. Das Normalmodell ist dagegen nicht einheitlich schlechter, sondern zeigt ein gemischtes Bild. In c_bed, c_ein und n_bed ist Normal im Mittel etwas schwächer als Gamma und NegBin2, sowohl in RMSE als auch in MAE. In n_ein ist Normal dagegen leicht besser, und in CS sogar deutlich besser, vor allem für AOI 2, wo RMSE und MAE klar unter denen von Gamma und NegBin2 liegen. Damit liefert der prädiktive Vergleich kein einfaches Muster, nach dem Normal generell ausgeschlossen werden könnte. Vielmehr zeigt sich: Gamma(log) und NegBin2(log) sind prädiktiv praktisch ununterscheidbar, während das Normalmodell je nach Datensatz teils etwas schlechter, teils aber auch klar konkurrenzfähig oder sogar besser ist. Für die Entscheidung zwischen Gamma und NegBin2 hilft dieser Block daher kaum weiter; für die Stellung des Normalmodells relativiert er den Eindruck aus dem Stabilitätsvergleich, weil Normal prädiktiv nicht durchgängig unterlegen ist.
+
+### Tabelle Knitready
+knitr::kable(
+  round_df_4(res_prediction_frt$prediction_comparison_all)  %>% select(-n_aoi_in_cluster, -n_pred__gamma_log, -n_pred__nbinom2, - cluster_formula_type, -n_pred__normal),
+  format = "html",
+  table.attr = 'style="width:100%; table-layout: fixed;"'
+)
+### Tabelle Knitready
+knitr::kable(
+  round_df_4(res_prediction_frt$compact_summary_all),
+  format = "html",
+  table.attr = 'style="width:100%; table-layout: fixed;"'
+)
+```
+<br><br>
 
 
 *DHARMa FRT*
@@ -3854,29 +3926,29 @@ fit_one_full_case_frt_old_model <- function(df_aggr,
 # PLOTAUSGABE
 # =========================================================
 
-print_all_frt_residual_plots <- function(res_obj) {
-  plot_keys <- names(res_obj$plot_data_list)
-
-  for (plot_key in plot_keys) {
-    plot_data <- res_obj$plot_data_list[[plot_key]]
-    simres <- res_obj$simres_list[[plot_key]]
-
-    if (is.null(plot_data) || is.null(simres)) next
-
-    print(plot_frt_residuals_vs_fitted(plot_data, plot_key, 1))
-    print(plot_frt_residuals_vs_nLetters(plot_data, plot_key, 2))
-    print(plot_frt_observed_vs_fitted(plot_data, plot_key, 3))
-
-    graphics::plot(simres)
-    graphics::mtext(
-      text = paste0("[4/4] Standard DHARMa Plot | ", plot_key),
-      side = 3,
-      line = 1,
-      cex = 1.1,
-      font = 2
-    )
-  }
-}
+#print_all_frt_residual_plots <- function(res_obj) {
+#  plot_keys <- names(res_obj$plot_data_list)
+#
+#  for (plot_key in plot_keys) {
+#    plot_data <- res_obj$plot_data_list[[plot_key]]
+#    simres <- res_obj$simres_list[[plot_key]]
+#
+#    if (is.null(plot_data) || is.null(simres)) next
+#
+#    print(plot_frt_residuals_vs_fitted(plot_data, plot_key, 1))
+#    print(plot_frt_residuals_vs_nLetters(plot_data, plot_key, 2))
+#    print(plot_frt_observed_vs_fitted(plot_data, plot_key, 3))
+#
+#    graphics::plot(simres)
+#    graphics::mtext(
+#      text = paste0("[4/4] Standard DHARMa Plot | ", plot_key),
+#      side = 3,
+#      line = 1,
+#      cex = 1.1,
+#      font = 2
+#    )
+#  }
+#}
 
 # =========================================================
 # EIN DATENSATZ
@@ -3994,11 +4066,20 @@ res_frt_residuals_old_model <- run_frt_residual_analysis_old_model_all(
 # TABELLEN
 # =========================================================
 
-round_df_4(res_frt_residuals_old_model$residual_summary_all)
-round_df_4(res_frt_residuals_old_model$problem_counts_all)
-round_df_4(res_frt_residuals_old_model$problem_fits_only_all)
+#round_df_4(res_frt_residuals_old_model$residual_summary_all)
+#round_df_4(res_frt_residuals_old_model$problem_counts_all)
+
+tablefrt <- round_df_4(res_frt_residuals_old_model$problem_fits_only_all) %>% select(-n_aoi_in_cluster, -cluster_formula_type, -n_obs, -n_topics,-n_condition, -n_participants, -n_speaker, -formula, -fit_warning_text, -fit_message_text, -n_warning_messages, -fit_nonzero_convergence, -fit_singular, -logLik, -aic, -bic, -n_obs_residuals, -fit_nonposdef_hessian, -n_messages, -fit_error, -n_AOI, -fit_ok)
+
+
+### Tabelle Knitready
+knitr::kable(
+  tablefrt,
+  format = "html",
+  table.attr = 'style="width:100%; table-layout: fixed;"'
+)
 ```
-Problem Counts per Modell
+
 ```{r}
 problem_counts_frt_by_family_long <- res_frt_residuals_old_model$residual_summary_all %>%
   dplyr::count(family, problem_type) %>%
@@ -4009,9 +4090,19 @@ problem_counts_frt_by_family_long <- res_frt_residuals_old_model$residual_summar
   ) %>%
   dplyr::arrange(family, problem_type)
 
-round_df_4(problem_counts_frt_by_family_long)
+
+
+
+### Tabelle Knitready
+knitr::kable(
+  round_df_4(problem_counts_frt_by_family_long),
+  format = "html",
+  table.attr = 'style="width:100%; table-layout: fixed;"'
+)
 ```
-Für FRT spricht die DHARMa-Diagnostik gegen das Normalmodell. Dieses zeigt nur in 4 von 13 Fällen unauffällige Residuen, dagegen aber in 9 Fällen Uniformity-Signale und damit wiederholt Hinweise auf eine unzureichende Modellanpassung. Gamma und negbin2 schneiden insgesamt günstiger ab, da sie häufiger unauffällige Fits aufweisen. Allerdings treten bei beiden Familien auch mehrfach kombinierte Uniformity- und Dispersion-Signale auf, sodass keine der beiden Verteilungen durchgängig unproblematisch ist. Zwischen gamma und negbin2 ergibt sich nur ein leichter Vorteil für negbin2, da diese Familie etwas häufiger unauffällige Diagnosen zeigt und keine isolierten Ausreißersignale aufweist. Insgesamt erscheint negbin2 damit auch für FRT als die etwas geeignetere Modellfamilie, wobei dieser Befund zurückhaltend zu interpretieren ist.
+<br><br>
+
+
 
 *DHARMa TRT*
 ```{r}
@@ -4540,29 +4631,29 @@ fit_one_full_case_trt_old_model <- function(df_aggr,
 # PLOTAUSGABE
 # =========================================================
 
-print_all_trt_residual_plots <- function(res_obj) {
-  plot_keys <- names(res_obj$plot_data_list)
-
-  for (plot_key in plot_keys) {
-    plot_data <- res_obj$plot_data_list[[plot_key]]
-    simres <- res_obj$simres_list[[plot_key]]
-
-    if (is.null(plot_data) || is.null(simres)) next
-
-    print(plot_trt_residuals_vs_fitted(plot_data, plot_key, 1))
-    print(plot_trt_residuals_vs_nLetters(plot_data, plot_key, 2))
-    print(plot_trt_observed_vs_fitted(plot_data, plot_key, 3))
-
-    graphics::plot(simres)
-    graphics::mtext(
-      text = paste0("[4/4] Standard DHARMa Plot | ", plot_key),
-      side = 3,
-      line = 1,
-      cex = 1.1,
-      font = 2
-    )
-  }
-}
+#print_all_trt_residual_plots <- function(res_obj) {
+#  plot_keys <- names(res_obj$plot_data_list)
+#
+#  for (plot_key in plot_keys) {
+#    plot_data <- res_obj$plot_data_list[[plot_key]]
+#    simres <- res_obj$simres_list[[plot_key]]
+#
+#    if (is.null(plot_data) || is.null(simres)) next#
+#
+#    print(plot_trt_residuals_vs_fitted(plot_data, plot_key, 1))
+#    print(plot_trt_residuals_vs_nLetters(plot_data, plot_key, 2))
+#    print(plot_trt_observed_vs_fitted(plot_data, plot_key, 3))
+#
+#    graphics::plot(simres)
+#    graphics::mtext(
+#      text = paste0("[4/4] Standard DHARMa Plot | ", plot_key),
+#      side = 3,
+#      line = 1,
+#      cex = 1.1,
+#      font = 2
+#    )
+#  }
+#}
 
 # =========================================================
 # EIN DATENSATZ
@@ -4680,9 +4771,14 @@ res_trt_residuals_old_model <- run_trt_residual_analysis_old_model_all(
 # TABELLEN
 # =========================================================
 
-round_df_4(res_trt_residuals_old_model$residual_summary_all)
-round_df_4(res_trt_residuals_old_model$problem_counts_all)
-round_df_4(res_trt_residuals_old_model$problem_fits_only_all)
+#round_df_4(res_trt_residuals_old_model$residual_summary_all)
+#round_df_4(res_trt_residuals_old_model$problem_counts_all)
+tabletrt <- round_df_4(res_trt_residuals_old_model$problem_fits_only_all) %>% select(-n_aoi_in_cluster, -cluster_formula_type, -n_obs, -n_topics,-n_condition, -n_participants, -n_speaker, -formula, -fit_warning_text, -fit_message_text, -n_warning_messages, -fit_nonzero_convergence, -fit_singular, -logLik, -aic, -bic, -n_obs_residuals, -fit_nonposdef_hessian, -n_messages, -fit_error, -n_AOI)
+knitr::kable(
+  tabletrt,
+  format = "html",
+  table.attr = 'style="width:100%; table-layout: fixed;"'
+)
 ```
 Problem Counts pro Modell
 ```{r}
@@ -4695,14 +4791,20 @@ problem_counts_trt_by_family_long <- res_trt_residuals_old_model$residual_summar
   ) %>%
   dplyr::arrange(family, problem_type)
 
-round_df_4(problem_counts_trt_by_family_long)
+
+knitr::kable(
+  problem_counts_trt_by_family_long,
+  format = "html",
+  table.attr = 'style="width:100%; table-layout: fixed;"'
+)
 ```
+<br><br>
 
-Die DHARMa-Diagnostik für TRT spricht deutlich gegen die Verwendung des Normalmodells. Dieses zeigt nur in wenigen Fällen unauffällige Residuen, während in der Mehrzahl der Fits Uniformity-Signale auftreten, die auf systematische Abweichungen zwischen Modell und Daten hindeuten. Demgegenüber weisen sowohl das Gamma- als auch das Negativ-Binomial-Modell in nahezu allen Fällen unauffällige Diagnosen auf. Da sich zwischen diesen beiden Familien diagnostisch nur ein sehr geringer Unterschied zeigt, beide jedoch dem Normalmodell klar überlegen sind, erscheinen sie für TRT deutlich angemessener. Unter zusätzlicher Berücksichtigung von Stabilität und Vorhersagegüte kann daher negbin2 als bevorzugte Modellfamilie eingeordnet werden.
 
 
-Die Finale Familie wird wieder über RRT bestimmt. 
-Topic LOO Predicition Vergleich
+
+
+*RRT Topic LOO Predicition Vergleich*
 ```{r}
 library(dplyr)
 library(tidyr)
@@ -5282,15 +5384,25 @@ res_rrt_topicloo <- run_rrt_topicloo_all(
 # OUTPUTS
 # =========================================================
 
-round_df_4(res_rrt_topicloo$loo_all)
-round_df_4(res_rrt_topicloo$loo_pairwise)
-round_df_4(res_rrt_topicloo$loo_summary_by_experiment)
-round_df_4(res_rrt_topicloo$loo_summary_overall)
+#round_df_4(res_rrt_topicloo$loo_all)
+#round_df_4(res_rrt_topicloo$loo_pairwise)
+
+#round_df_4(res_rrt_topicloo$loo_summary_overall)
+
+
+
+### Tabelle Knitready
+knitr::kable(
+  round_df_4(res_rrt_topicloo$loo_summary_by_experiment),
+  format = "html",
+  table.attr = 'style="width:100%; table-layout: fixed;"'
+)
+
 ```
-Ausgeglichen.
+<br><br>
 
 
-Participant LOO
+*Participant LOO*
 ```{r}
 library(dplyr)
 library(tidyr)
@@ -5984,11 +6096,22 @@ res_rrt_participantloo <- run_rrt_participantloo_all(
 # OUTPUTS
 # =========================================================
 
-round_df_4(res_rrt_participantloo$loo_all)
-round_df_4(res_rrt_participantloo$loo_pairwise)
-round_df_4(res_rrt_participantloo$loo_summary_by_experiment)
-round_df_4(res_rrt_participantloo$loo_summary_overall)
-round_df_4(res_rrt_participantloo$fit_problem_summary_long)
+#round_df_4(res_rrt_participantloo$loo_all)
+#round_df_4(res_rrt_participantloo$loo_pairwise)
+#round_df_4(res_rrt_participantloo$loo_summary_by_experiment)
+#round_df_4(res_rrt_participantloo$loo_summary_overall)
+#round_df_4(res_rrt_participantloo$fit_problem_summary_long)
+
+knitr::kable(
+  round_df_4(res_rrt_participantloo$loo_summary_by_experiment),
+  format = "html",
+  table.attr = 'style="width:100%; table-layout: fixed;"'
+)
+
+knitr::kable(
+  round_df_4(res_rrt_participantloo$fit_problem_summary_long),
+  format = "html",
+  table.attr = 'style="width:100%; table-layout: fixed;"'
+)
 ```
-Im Participant-wise Leave-One-Out-Cross-Validation zeigte das Hurdle-NegBin-Modell keinen wirklichen unterschied gegenüber dem Gamma-Modell, gemessen an der out-of-sample Log-Likelihood und der Zahl gewonnener Splits. Das Hurdle-Gamma-Modell war hingegen numerisch etwas stabiler. Insgesamt spricht der CV-Vergleich daher eher für das Gamma-Modell als Hauptmodell für RRT, wobei der Vorsprung inhaltlich klein bleibt.
 

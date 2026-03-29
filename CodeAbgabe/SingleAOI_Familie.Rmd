@@ -3,9 +3,32 @@ title: "SingleAOI_Familie"
 output: html_document
 ---
 
-Wir schauen zuerst, ob Poisson Overdispersed ist, und entscheiden dann zwischen NegBin1 und 2 direkt.
-Das hilft uns die restliche analyse kompakter zu halten. 
 
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+  echo = FALSE,
+  warning = FALSE,
+  message = FALSE,
+  error = FALSE,
+  results = "asis"
+)
+```
+<style>
+table {
+  width: 100%;
+  table-layout: fixed;
+  border-collapse: collapse;
+}
+
+th, td {
+  white-space: normal !important;
+  word-wrap: break-word;
+  overflow-wrap: break-word;
+  vertical-align: top;
+  padding: 4px;
+}
+</style>
 ```{r}
 library(here)
 library(dplyr)
@@ -35,7 +58,7 @@ n_ein <- n_ein %>% dplyr::filter(!is.na(FRT), FRT > 0)
 CS    <- CS    %>% dplyr::filter(!is.na(FRT), FRT > 0)
 ```
 
-Incluso wird als Tie Breaker verwendet sofern nötig. Grund: Er folgt anderer Struktur als gewöhnlich.
+<br><br>.
 
 
 
@@ -183,11 +206,23 @@ poisson_overdisp_by_experiment <- poisson_overdisp_tbl %>%
     .groups = "drop"
   )
 
-poisson_overdisp_tbl
-poisson_overdisp_summary
-poisson_overdisp_by_experiment
+#poisson_overdisp_tbl
+
+#poisson_overdisp_by_experiment
+
+knitr::kable(
+  poisson_overdisp_tbl %>% select(experiment, AOI, dispersion_ratio,chisq, overdispersed_0_05 ),
+  format = "html",
+  table.attr = 'style="width:100%; table-layout: fixed;"'
+)
+
+knitr::kable(
+  poisson_overdisp_by_experiment,
+  format = "html",
+  table.attr = 'style="width:100%; table-layout: fixed;"'
+)
 ```
-Die Ergebnisse der Vorprüfung zeigen für alle untersuchten AOIs eine ausgeprägte Overdispersion der Poisson-Modelle. Die geschätzten Dispersionsverhältnisse lagen durchweg weit über dem unter einem adäquaten Poisson-Modell erwarteten Wert von 1, und alle zugehörigen Tests fielen hochsignifikant aus. Damit wird deutlich, dass die Varianz der beobachteten FRT-Werte systematisch größer ist als vom Poisson-Modell angenommen. Poisson-Modelle wurden daher für FRT nicht weiter als geeignete Kandidaten betrachtet. 
+<br><br>
 
 NegBin1 vs NegBin2
 ```{r}
@@ -474,13 +509,25 @@ nb_family_summary <- fit_table_nb %>%
 # =========================================================
 # OUTPUT
 # =========================================================
-nb_aic_table
-nb_warning_table
-nb_family_summary
-```
-NegBin1 hat warnings die NegBin2 nicht hat, außerdem hat NegBin2 bessere AIC werte. 
+#nb_aic_table
+#nb_warning_table
+#nb_family_summary
 
-Wir machen weiter mit nur NegBin2 im Family vergleich. 
+
+
+### Tabelle Knitready
+knitr::kable(
+  nb_aic_table,
+  format = "html",
+  table.attr = 'style="width:100%; table-layout: fixed;"'
+)
+knitr::kable(
+  nb_family_summary,
+  format = "html",
+  table.attr = 'style="width:100%; table-layout: fixed;"'
+)
+```
+<br><br>
 
 Full-Data Problems
 ```{r}
@@ -1028,13 +1075,22 @@ res_family_screen_full <- run_family_screen_full_all(
 # =========================================================
 
 #round_df_4(res_family_screen_full$full_all)
-round_df_4(res_family_screen_full$full_summary)
-round_df_4(res_family_screen_full$full_overall)
+#round_df_4(res_family_screen_full$full_summary)
+#round_df_4(res_family_screen_full$full_overall)
+
+
+
+### Tabelle Knitready
+knitr::kable(
+  round_df_4(res_family_screen_full$full_overall),
+  format = "html",
+  table.attr = 'style="width:100%; table-layout: fixed;"'
+)
 ```
 
-Wir sehen: nur gamma, negbin2 und normal (eine singularity) laufen unproblematisch durch
+<br><br>
 
-Um Problem zu verdeutlichen, machen wir noch einen Topic LOO
+<br><br> Topic LOO
 ```{r}
 library(dplyr)
 library(tidyr)
@@ -1792,14 +1848,29 @@ res_family_screen_topicloo <- run_family_screen_topicloo_all(
 # OUTPUTS
 # =========================================================
 
-round_df_4(res_family_screen_topicloo$loo_all)
-round_df_4(res_family_screen_topicloo$loo_summary)
-round_df_4(res_family_screen_topicloo$loo_overall)%>%
-  dplyr::select(1:13)
+#round_df_4(res_family_screen_topicloo$loo_all)
+allfams <- round_df_4(res_family_screen_topicloo$loo_summary) %>% select(1:13)
+#round_df_4(res_family_screen_topicloo$loo_overall)%>%
+#  dplyr::select(1:13)
+
+
+
+### Tabelle Knitready
+knitr::kable(
+  allfams,
+  format = "html",
+  table.attr = 'style="width:100%; table-layout: fixed;"'
+)
+
+knitr::kable(
+  round_df_4(res_family_screen_topicloo$loo_overall)%>%
+  dplyr::select(1:13),
+  format = "html",
+  table.attr = 'style="width:100%; table-layout: fixed;"'
+)
 ```
 
-Wir sehen: Numerisch eher unproblematisch sind: NegBin2, Gamma und Normal, alle anderen machen häufig probeme. 
-NegBin2 und Gamma haben jeweils eine n_nonposdef_hessian, normal hat 12 Singular Fits. 
+<br><br>
 
 Prediction Güte nur die 3 Familien:
 ```{r}
@@ -2367,17 +2438,23 @@ res_topicloo <- run_topicloo_all(
 # =========================================================
 
 #round_df_4(res_topicloo$loo_all)
-round_df_4(res_topicloo$fit_summary)
-round_df_4(res_topicloo$fit_overall)
-round_df_4(res_topicloo$prediction_summary)
-round_df_4(res_topicloo$prediction_overall)
+#round_df_4(res_topicloo$fit_summary)
+#round_df_4(res_topicloo$fit_overall)
+pred_overview <- round_df_4(res_topicloo$prediction_summary) %>% select(-n_folds, -n_pred_failed, -n_preds_with_warning, -total_pred_warning_messages)
+#round_df_4(res_topicloo$prediction_overall)
+
+knitr::kable(
+  pred_overview,
+  format = "html",
+  table.attr = 'style="width:100%; table-layout: fixed;"'
+)
+
 ```
-Wir sehen: Prädiktiv schneidet Normal meist leicht besser ab. 
+<br><br>
 
 
-Wir beachten noch die DHARMa Residuuen, um zu verstehen, wie die jeweiligen Verteilungen sich verhalten.
 
-FRT DHARMa checks
+*FRT DHARMa checks*
 ```{r}
 library(dplyr)
 library(tidyr)
@@ -2982,7 +3059,7 @@ run_frt_residual_analysis <- function(dfs,
 res_frt_residuals <- run_frt_residual_analysis(
   dfs = dfs,
   nsim = 2000,
-  print_plots = TRUE
+  print_plots = FALSE
 )
 
 # =========================================================
@@ -2992,7 +3069,15 @@ res_frt_residuals <- run_frt_residual_analysis(
 #round_df_4(res_frt_residuals$residual_summary)
 ```
 ```{r}
-round_df_4(res_frt_residuals$problem_counts)
+
+
+
+### Tabelle Knitready
+knitr::kable(
+  round_df_4(res_frt_residuals$problem_counts),
+  format = "html",
+  table.attr = 'style="width:100%; table-layout: fixed;"'
+)
 residual_table_problems_only <- res_frt_residuals$residual_summary %>%
   dplyr::select(
     dataset,
@@ -3008,14 +3093,16 @@ residual_table_problems_only <- res_frt_residuals$residual_summary %>%
   dplyr::arrange(dataset, AOI, family) %>%
   round_df_4()
 
-residual_table_problems_only
+
+knitr::kable(
+  residual_table_problems_only,
+  format = "html",
+  table.attr = 'style="width:100%; table-layout: fixed;"'
+)
 ```
-Die DHARMa-Diagnostik für FRT ergibt insgesamt kein besonders gutes Bild.
-Von den drei Modellklassen zeigt Negative Binomial noch die meisten unauffälligen Fälle (14), gefolgt von Gamma (12) und Normal (10). Gleichzeitig treten aber bei allen drei Familien in vielen AOIs systematische Residualprobleme auf. Am häufigsten sind Uniformity-Signale, teils zusammen mit Dispersion-Signalen. Gerade in den größeren Datensätzen, besonders bei n_bed, häufen sich diese Auffälligkeiten deutlich. Das spricht dafür, dass keine der getesteten Verteilungen die TRT-Struktur durchgängig sauber erfasst.
-In den kleineren Datensätzen ist das Bild gemischter. Bei c_bed und c_ein gibt es mehrere unauffällige AOIs, aber auch einzelne klare Probleme, etwa Ausreißer- oder Uniformity-Signale. In den größeren Nebrija-Datensätzen verschlechtern sich die Diagnosen deutlich: Für mehrere AOIs in n_bed und n_ein zeigen insbesondere Gamma und Negative Binomial wiederholt kombinierte Uniformity- und Dispersion-Probleme, während das Normalmodell dort oft ebenfalls ein Uniformity-Signal zeigt. Für CS zeigen beide getesteten count-artigen Familien und auch das Normalmodell in mindestens einer AOI klare Uniformity-Probleme.
-Insgesamt heißt das: Es gibt keine Modellklasse, die für TRT über alle Datensätze und AOIs hinweg klar überzeugt. Negative Binomial wirkt rein deskriptiv etwas robuster als Gamma und Normal, aber auch dieses Modell zeigt in mehreren AOIs deutliche Residualprobleme. Eine eindeutige „beste“ Familie lässt sich daher aus den DHARMa-Checks allein nicht ableite
 
 
+<br><br>
 *TRT DHARMa checks*
 ```{r}
 library(dplyr)
@@ -3672,133 +3759,25 @@ trt_best_family_residual_table <- res_trt_residuals$residual_summary %>%
     problem_type
   )
 
-round_df_4(res_trt_residuals$residual_summary)
-round_df_4(res_trt_residuals$problem_counts)
-trt_residual_table_compact
-trt_best_family_residual_table
-```
+#round_df_4(res_trt_residuals$residual_summary)
+#round_df_4(res_trt_residuals$problem_counts)
+#trt_residual_table_compact %>% filter(problem_type != "none")
+#trt_best_family_residual_table
 
-Für TRT ist das Bild viel klarer und deutlich besser als bei FRT.
-Sowohl Gamma als auch Negative Binomial zeigen in allen 22 geprüften Fällen problem_type = "none". Das heißt, in diesen AOIs gab es in den verwendeten DHARMa-Checks keine auffälligen Signale für Uniformity-, Dispersion- oder Outlier-Probleme. Das spricht dafür, dass beide Modellklassen die Verteilung der FRT-Daten insgesamt gut abbilden.
-Das Normalmodell schneidet dagegen merklich schlechter ab. Nur 8 von 22 Fällen sind unauffällig, in 13 Fällen tritt ein Uniformity-Signal auf und in einem weiteren Fall ein Outlier-Signal. Damit zeigt das Normalmodell deutlich häufiger Residualprobleme als die beiden anderen Familien.
-Insgesamt spricht das Ergebnis klar dafür, für FRT eher eine Gamma- oder Negative-Binomial-Familie zu verwenden, während das Normalmodell deutlich weniger gut passt. Aus den DHARMa-Checks allein sind Gamma und Negative Binomial hier praktisch gleich gut.
-
-
-
-Da bisher noch keine Entscheidung zwischen Gamma und NegBin2 gefallen ist, schauen wir uns die jeweiligen RRT modelle an:
-RRT: mod_rrt <- glmmTMB( RRT ~  condition + nLetters + (1 | Topic) + (1 | Participant), ziformula = ~ condition + nLetters, data = dat, family = ziGamma(link = "log") )
-RRT: mod_rrt <- glmmTMB( RRT ~ condition + nLetters + (1 | Topic) + (1 | Participant), ziformula = ~ condition + nLetters, data = dat, family = truncated_nbinom2(link = "log") )
-
-
-
-Ein Visualler Check der Desnities der RRT mit und ohne 0 verdeutlichen unserern Bedarf für ein Modell, welches 0er explizit behandelt. 
-density ohne 0er:
-```{r}
-library(dplyr)
-library(ggplot2)
-library(purrr)
-
-# =========================================================
-# INPUT
-# =========================================================
-dfs <- list(
-  c_bed = c_bed,
-  c_ein = c_ein,
-  n_bed = n_bed,
-  n_ein = n_ein,
-  CS    = CS,
-  INC = INC
+knitr::kable(
+  round_df_4(res_trt_residuals$problem_counts),
+  format = "html",
+  table.attr = 'style="width:100%; table-layout: fixed;"'
+)
+knitr::kable(
+  trt_residual_table_compact %>% filter(problem_type != "none"),
+  format = "html",
+  table.attr = 'style="width:100%; table-layout: fixed;"'
 )
 
-# =========================================================
-# FUNCTION: density plot per AOI
-# =========================================================
-plot_rrt_density_by_aoi <- function(df, dataset_name) {
-  
-  df_plot <- df %>%
-    dplyr::filter(!is.na(RRT), RRT > 0, !is.na(AOI))
-  
-  ggplot(df_plot, aes(x = RRT)) +
-    geom_density(adjust = 1) +
-    facet_wrap(~ AOI, scales = "free_y") +
-    labs(
-      title = paste("Density plots of RRT > 0 by AOI:", dataset_name),
-      x = "RRT",
-      y = "Density"
-    ) +
-    theme_minimal(base_size = 12)
-}
-
-# =========================================================
-# CREATE PLOTS
-# =========================================================
-density_plots <- purrr::imap(dfs, plot_rrt_density_by_aoi)
-
-# =========================================================
-# SHOW PLOTS
-# =========================================================
-density_plots$c_bed
-density_plots$c_ein
-density_plots$n_bed
-density_plots$n_ein
-density_plots$CS
-density_plots$INC
-```
-density mit 0ern
-```{r}
-library(dplyr)
-library(ggplot2)
-library(purrr)
-
-# =========================================================
-# INPUT
-# =========================================================
-dfs <- list(
-  c_bed = c_bed,
-  c_ein = c_ein,
-  n_bed = n_bed,
-  n_ein = n_ein,
-  CS    = CS,
-  INC = INC
-)
-
-# =========================================================
-# FUNCTION: density plot per AOI
-# =========================================================
-plot_rrt_density_by_aoi <- function(df, dataset_name) {
-  
-  df_plot <- df %>%
-    dplyr::filter(!is.na(RRT), !is.na(AOI))
-  
-  ggplot(df_plot, aes(x = RRT)) +
-    geom_density(adjust = 1) +
-    facet_wrap(~ AOI, scales = "free_y") +
-    labs(
-      title = paste("Density plots of RRT by AOI:", dataset_name),
-      x = "RRT",
-      y = "Density"
-    ) +
-    theme_minimal(base_size = 12)
-}
-
-# =========================================================
-# CREATE PLOTS
-# =========================================================
-density_plots <- purrr::imap(dfs, plot_rrt_density_by_aoi)
-
-# =========================================================
-# SHOW PLOTS
-# =========================================================
-density_plots$c_bed
-density_plots$c_ein
-density_plots$n_bed
-density_plots$n_ein
-density_plots$CS
-density_plots$INC
 ```
 
-
-
+<br><br>
 RRT NegBin vs Gamma
 ```{r}
 library(dplyr)
@@ -4262,12 +4241,26 @@ res_rrt_screen_full <- run_rrt_screen_full_all(
 # OUTPUTS
 # =========================================================
 
-round_df_4(res_rrt_screen_full$full_all)
-round_df_4(res_rrt_screen_full$full_summary)
-round_df_4(res_rrt_screen_full$full_overall)
-```
-Hier ist ziGamma stabiler. Weniger nonposdef_hessian
 
+#round_df_4(res_rrt_screen_full$full_summary)
+
+
+
+
+### Tabelle Knitready
+knitr::kable(
+  round_df_4(res_rrt_screen_full$full_all) %>% select(experiment, family_name, AOI, prop_zero_observed, prop_zero_predicted),
+  format = "html",
+  table.attr = 'style="width:100%; table-layout: fixed;"'
+)
+knitr::kable(
+ round_df_4(res_rrt_screen_full$full_overall) %>% select(-n_rankdef_consistent_with_nLetters_issue, -n_rankdef_not_clearly_consistent_with_nLetters_issue),
+  format = "html",
+  table.attr = 'style="width:100%; table-layout: fixed;"'
+)
+```
+
+<br><br>
 
 Topic LOO - RRT
 ```{r}
@@ -4797,14 +4790,23 @@ res_rrt_screen_topicloo <- run_rrt_screen_topicloo_all(
 # OUTPUTS
 # =========================================================
 
-round_df_4(res_rrt_screen_topicloo$loo_all)
-round_df_4(res_rrt_screen_topicloo$loo_summary)
-round_df_4(res_rrt_screen_topicloo$loo_overall)
+#round_df_4(res_rrt_screen_topicloo$loo_all)
+#round_df_4(res_rrt_screen_topicloo$loo_summary)
+
+
+
+
+### Tabelle Knitready
+knitr::kable(
+  round_df_4(res_rrt_screen_topicloo$loo_overall) %>% select(-n_rankdef_consistent_with_nLetters_issue, -n_rankdef_not_clearly_consistent_with_nLetters_issue),
+  format = "html",
+  table.attr = 'style="width:100%; table-layout: fixed;"'
+)
 ```
-Hier beide recht instabil. 
 
 
 
+<br><br>
 
 Wir schauen uns den Participant LOO auf RRT an:
 ```{r}
@@ -5378,15 +5380,30 @@ res_rrt_participantloo_fit <- run_rrt_participantloo_fit_screen(dfs)
 # OUTPUTS
 # =========================================================
 
-round_df_4(res_rrt_participantloo_fit$participantloo_fit_table)
+#round_df_4(res_rrt_participantloo_fit$participantloo_fit_table)
 
-round_df_4(res_rrt_participantloo_fit$family_summary)
 
-round_df_4(res_rrt_participantloo_fit$dataset_family_summary)
 
-round_df_4(res_rrt_participantloo_fit$dataset_aoi_family_summary)
+#round_df_4(res_rrt_participantloo_fit$dataset_family_summary)
+
+
+
+
+
+### Tabelle Knitready
+knitr::kable(
+  round_df_4(res_rrt_participantloo_fit$family_summary) %>% select(-mean_mae, -median_mae, -mean_rmse, -median_rmse, -mean_abs_zero_diff, -median_abs_zero_diff, -mean_aic, -median_aic, -n_fit_failed),
+  format = "html",
+  table.attr = 'style="width:100%; table-layout: fixed;"'
+)
+
+knitr::kable(
+  round_df_4(res_rrt_participantloo_fit$dataset_aoi_family_summary) %>% select(-n_fit_failed, -n_nonposdef_hessian, -n_nonzero_convergence, -n_cond_rank_deficient, -n_zi_rank_deficient),
+  format = "html",
+  table.attr = 'style="width:100%; table-layout: fixed;"'
+)
 ```
-Gamma numerisch leicht unterlegen in der RRT
+
 
 
 

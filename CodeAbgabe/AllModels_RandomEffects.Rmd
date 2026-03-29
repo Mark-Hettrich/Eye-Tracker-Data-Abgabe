@@ -2,15 +2,31 @@
 title: "AllModels_RandomEffects"
 output: html_document
 ---
+
 ```{r setup, include=FALSE}
 knitr::opts_chunk$set(
   echo = FALSE,
   warning = FALSE,
   message = FALSE,
-  error = FALSE
+  error = FALSE,
+  results = "asis"
 )
 ```
+<style>
+table {
+  width: 100%;
+  table-layout: fixed;
+  border-collapse: collapse;
+}
 
+th, td {
+  white-space: normal !important;
+  word-wrap: break-word;
+  overflow-wrap: break-word;
+  vertical-align: top;
+  padding: 4px;
+}
+</style>
 ```{r}
 library(here)
 library(dplyr)
@@ -41,12 +57,10 @@ CS    <- CS    %>% dplyr::filter(!is.na(FRT), TRT > 0)
 INC <- INC %>% dplyr::filter(!is.na(FRT), TRT > 0)
 ```
 
-Wir prüfen Möglichkeit von komplexeren Ramdom Effects auf verschiedenen Familien, pro Modell Variante und auf FRT
 
 
 
 **AGGRERGATED AOIs***
-Random Effect Check progressiver Abbau
 ```{r}
 library(dplyr)
 library(tidyr)
@@ -607,14 +621,18 @@ res_re_screen_frt <- run_re_screen_all(
 
 #round_df_4(res_re_screen_frt$full_all)
 #round_df_4(res_re_screen_frt$decision_table)
-round_df_4(res_re_screen_frt$best_per_family_cluster)
+#round_df_4(res_re_screen_frt$best_per_family_cluster)
 #round_df_4(res_re_screen_frt$summary_by_experiment)
-round_df_4(res_re_screen_frt$summary_overall)
+#round_df_4(res_re_screen_frt$summary_overall)
+
+
+knitr::kable(
+  round_df_4(res_re_screen_frt$summary_overall),
+  format = "html",
+  table.attr = 'style="width:100%; table-layout: fixed;"'
+)
 ```
 
-Die Idee ist, dass man nicht direkt von einem maximalen Modell auf ein sehr einfaches Modell springen sollte. Stattdessen prüft man, ob Random Slopes für condition überhaupt stabil und sinnvoll schätzbar sind.
-
-Zur Prüfung der Random-Effects-Struktur wurden für die Gamma- und NegBin2-Modelle drei Varianten verglichen: ein Modell mit gekreuzten Random Intercepts, ein Modell mit zusätzlichen korrelierten Random Slopes für condition sowie ein Modell mit unkorrelierten Random Slopes. Die Modelle mit korrelierten Random Slopes zeigten in fast allen Clustern Konvergenzprobleme und häufig auch nicht positiv definite Hessian-Matrizen. Die Modelle mit unkorrelierten Random Slopes waren zwar etwas stabiler, zeigten jedoch häufig Boundary-Lösungen und lieferten nur selten eine Verbesserung gegenüber dem Random-Intercept-Modell. Die Random-Intercept-Modelle waren dagegen durchgehend stabil und lagen auch hinsichtlich des AIC fast immer im besten oder nahezu besten Bereich. Insgesamt ergab sich daher keine hinreichende empirische Unterstützung für die Aufnahme von Random Slopes für condition, sodass für die Hauptanalysen die gekreuzte Random-Intercept-Struktur beibehalten wurde.
 
 
 **SINGLE AOI UNNORMIERT**
@@ -977,13 +995,21 @@ re_decision_table <- fit_info_table %>%
 # =========================================================
 # OUTPUTS
 # =========================================================
-fit_info_table
+#fit_info_table
 #varcomp_table
 #correlation_table
 #varcomp_summary
 #correlation_flags
 #re_decision_table
-re_summary
+
+
+
+### Tabelle Knitready
+knitr::kable(
+  re_summary,
+  format = "html",
+  table.attr = 'style="width:100%; table-layout: fixed;"'
+)
 ```
 
 *NegBin2 und Normal*
@@ -1472,13 +1498,23 @@ re_summary <- fit_info_table %>%
 # =========================================================
 # OUTPUTS
 # =========================================================
-fit_info_table
+#fit_info_table
 #varcomp_table
 #correlation_table
 #varcomp_summary
 #correlation_flags
 #re_decision_table
-re_summary
+#re_summary
+
+
+
+
+### Tabelle Knitready
+knitr::kable(
+  re_summary,
+  format = "html",
+  table.attr = 'style="width:100%; table-layout: fixed;"'
+)
 ```
 
 
@@ -1836,13 +1872,19 @@ re_summary_wd <- fit_info_table_wd %>%
 # =========================================================
 # OUTPUTS
 # =========================================================
-fit_info_table_wd
+#fit_info_table_wd
 #varcomp_table_wd
 #correlation_table_wd
 #varcomp_summary_wd
 #correlation_flags_wd
 #re_decision_table_wd
-re_summary_wd
+
+### Tabelle Knitready
+knitr::kable(
+  re_summary_wd,
+  format = "html",
+  table.attr = 'style="width:100%; table-layout: fixed;"'
+)
 ```
 *NegBin und Normal*
 ```{r}
@@ -2330,12 +2372,19 @@ re_summary_wd <- fit_info_table_wd %>%
 # =========================================================
 # OUTPUTS
 # =========================================================
-fit_info_table_wd
+#fit_info_table_wd
 #varcomp_table_wd
 #correlation_table_wd
 #varcomp_summary_wd
 #correlation_flags_wd
 #re_decision_table_wd
-re_summary_wd
+#re_summary_wd
+
+### Tabelle Knitready
+knitr::kable(
+  re_summary_wd,
+  format = "html",
+  table.attr = 'style="width:100%; table-layout: fixed;"'
+)
 ```
 

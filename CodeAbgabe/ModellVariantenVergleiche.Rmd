@@ -3,6 +3,32 @@ title: "ModellVariantenVergleiche"
 output: html_document
 ---
 
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+  echo = FALSE,
+  warning = FALSE,
+  message = FALSE,
+  error = FALSE,
+  results = "asis"
+)
+```
+<style>
+table {
+  width: 100%;
+  table-layout: fixed;
+  border-collapse: collapse;
+}
+
+th, td {
+  white-space: normal !important;
+  word-wrap: break-word;
+  overflow-wrap: break-word;
+  vertical-align: top;
+  padding: 4px;
+}
+</style>
+
 ```{r}
 library(here)
 library(dplyr)
@@ -32,7 +58,7 @@ n_ein <- n_ein %>% dplyr::filter(!is.na(FRT), FRT > 0)
 CS    <- CS    %>% dplyr::filter(!is.na(FRT), FRT > 0)
 INC   <- INC   %>% dplyr::filter(!is.na(FRT), FRT > 0)
 ```
-
+<br><br>.
 
 *Vergleich: AOI Spezfische Prediciton und Fit-Fehler im Topic LOO*
 ```{r}
@@ -1016,20 +1042,7 @@ res_topic_compare_gamma <- run_topic_cv_compare_all_gamma(
 # OUTPUTS
 # =========================================================
 
-# 1) AOI-spezifischer direkter Vergleich
-#round_df_4(res_topic_compare_gamma$aoi_comparison_all)
 
-# 2) AOI-spezifische RMSE / MAE / Bias je Modell und heldout Topic
-#round_df_4(res_topic_compare_gamma$aoi_prediction_summary_all)
-
-# 3) Fit-Probleme pro Modelltyp
-round_df_4(res_topic_compare_gamma$fit_problem_summary_all)
-
-# 4) Detailtabelle pro tatsächlichem Fit
-#round_df_4(res_topic_compare_gamma$fit_level_all)
-
-# 5) Rohvorhersagen
-# res_topic_compare_gamma$cv_preds_all
 
 win_equal_loss_by_model <- dplyr::bind_rows(
   res_topic_compare_gamma$aoi_comparison_all %>%
@@ -1102,10 +1115,40 @@ win_equal_loss_by_model <- dplyr::bind_rows(
   ) %>%
   dplyr::arrange(model)
 
-round_df_4(win_equal_loss_by_model)
-```
-Inhaltlich schneiden die single-Modelle insgesamt am schwächsten ab. Das zeigt sich sowohl in den höheren RMSE- und MAE-Werten in fast allen Experimenten als auch in der paarweisen Vergleichstabelle, in der single mit 61 Siegen, aber 120 Niederlagen deutlich zurückliegt. Dagegen liegen die Strategien aggregated und all sehr nah beieinander. Beide erzielen über die Experimente hinweg ähnliche Fehlermaße, wobei all in c_bed, n_bed und beim globalen Vergleich leicht günstiger wirkt, während aggregated in einzelnen Experimenten praktisch gleichauf liegt. Die direkte Gegenüberstellung bestätigt dieses Bild: aggregated und all haben fast gleich viele Gewinne und Verluste, während beide dem single-Ansatz klar überlegen sind.
 
+
+# 1) AOI-spezifischer direkter Vergleich
+#round_df_4(res_topic_compare_gamma$aoi_comparison_all)
+
+# 2) AOI-spezifische RMSE / MAE / Bias je Modell und heldout Topic
+#round_df_4(res_topic_compare_gamma$aoi_prediction_summary_all)
+
+# 3) Fit-Probleme pro Modelltyp
+
+
+# 4) Detailtabelle pro tatsächlichem Fit
+#round_df_4(res_topic_compare_gamma$fit_level_all)
+
+# 5) Rohvorhersagen
+# res_topic_compare_gamma$cv_preds_all
+
+
+
+
+### Tabelle Knitready
+knitr::kable(
+  round_df_4(res_topic_compare_gamma$fit_problem_summary_all) %>% select(experiment, model_scope, rmse_overall, mae_overall, mean_bias_overall, median_bias_overall),
+  format = "html",
+  table.attr = 'style="width:100%; table-layout: fixed;"'
+)
+### Tabelle Knitready
+knitr::kable(
+  round_df_4(win_equal_loss_by_model),
+  format = "html",
+  table.attr = 'style="width:100%; table-layout: fixed;"'
+)
+```
+<br><br>.
 
 
 *FRT.WD vs FRT Gamma - Prädiktion auf Rohskala Vergleich*
@@ -1752,14 +1795,26 @@ res_head_to_head_gamma <- run_head_to_head_all_gamma(
 # =========================================================
 
 #round_df_4(res_head_to_head_gamma$prediction_summary_all)
-round_df_4(res_head_to_head_gamma$prediction_comparison_all)
-round_df_4(res_head_to_head_gamma$global_summary_all)
+#round_df_4(res_head_to_head_gamma$prediction_comparison_all)
+#round_df_4(res_head_to_head_gamma$global_summary_all)
+
+
+### Tabelle Knitready
+knitr::kable(
+  round_df_4(res_head_to_head_gamma$prediction_comparison_all)
+,
+  format = "html",
+  table.attr = 'style="width:100%; table-layout: fixed;"'
+)
+
+### Tabelle Knitready
+knitr::kable(
+  round_df_4(res_head_to_head_gamma$global_summary_all),
+  format = "html",
+  table.attr = 'style="width:100%; table-layout: fixed;"'
+)
 ```
-
-Methodisch wurden zwei Gamma-Mischmodelle in einem Topic-Leave-One-Out-Design anhand ihrer Vorhersagegenauigkeit auf der Rohskala von FRT verglichen. Die erste Strategie modelliert normierte Einzel-AOI-Werte und transformiert die Vorhersagen anschließend über die jeweilige Wortanzahl zurück auf die Rohskala. Die zweite Strategie modelliert die Rohzeiten direkt auf Cluster-Ebene. Für Cluster mit mehr als einer AOI wurde dabei ein aggregiertes Modell mit AOI-Effekt und AOI-Interaktion verwendet, während für Cluster mit nur einer AOI der AOI-Term aus dem Modell entfernt wurde. Die Modellgüte wurde ausschließlich über RMSE und MAE auf der gemeinsamen Rohskala beurteilt, sodass kleinere Werte jeweils eine höhere Vorhersagegenauigkeit anzeigen.
-Die Vorhersagen sind AOI spezifisch. 
-
-Inhaltlich ergibt sich kein einheitliches Gesamtbild. Für c_bed und CS zeigt die normierte Strategie im Mittel die geringeren Vorhersagefehler, für n_bed dagegen die aggregierte Rohzeitstrategie. Für c_ein und n_ein fallen die Unterschiede insgesamt eher klein aus. Ein klarer systematischer Zusammenhang mit der Clustergröße ist dabei nicht erkennbar. Insgesamt spricht der Vergleich daher gegen eine generelle Überlegenheit einer der beiden Strategien. Stattdessen hängt die günstigere Modellierung offenbar vom jeweiligen Experiment ab.
+<br><br>.
 
 
 
@@ -2515,10 +2570,12 @@ res_head_to_head_gamma <- run_head_to_head_all_gamma(
 #round_df_4(res_head_to_head_gamma$contrast_summary_all)
 
 # 3. Direkter Vergleich aggregated vs normalized
-round_df_4(res_head_to_head_gamma$contrast_comparison_all)
+
+knitr::kable(
+  round_df_4(res_head_to_head_gamma$contrast_comparison_all) %>% select(-n_topic_splits__aggregated_raw, -n_topic_splits__normalized_single,-n_aoi_in_cluster),
+  format = "html",
+  table.attr = 'style="width:100%; table-layout: fixed;"'
+)
 ```
 
-Die Ergebnisse sprechen insgesamt eher für die aggregierte AOI-Modellierung. Über alle 22 AOIs hinweg zeigte das aggregierte Rohzeitmodell in der Mehrzahl der Fälle die geringere Standardabweichung des log-ratio-basierten Condition-Kontrasts und damit die höhere Stabilität über die Topic-LOO-Splits. Dieser Vorteil war besonders deutlich in den Datensätzen c_bed und n_bed, in denen mehrere AOIs innerhalb größerer Cluster nicht nur stabilere, sondern teils auch inhaltlich deutlich abweichende mittlere Condition-Effekte ergaben als im normierten Ansatz. 
-Auffällig war dies vor allem in Clustern mit zwei oder drei AOIs, etwa bei AOI 2 und 3 in c_bed sowie bei AOI 2 und 3 in n_bed, wo sich zwischen beiden Strategien nicht nur die Streuung, sondern zum Teil auch Richtung und Stärke des geschätzten Effekts klar unterschieden. Dagegen fielen Ein-AOI-Cluster meist unauffälliger aus; dort lagen die mittleren Kontraste der beiden Strategien häufiger näher beieinander, was dafür spricht, dass sich die Unterschiede vor allem dann zeigen, wenn die AOI-Struktur im aggregierten Modell tatsächlich gemeinsam genutzt werden kann. 
-Keine einheitliche Überlegenheit ergab sich jedoch für alle Datensätze: Während c_bed, c_ein, n_bed und in abgeschwächter Form auch CS eher zugunsten der Aggregation ausfielen, zeigte n_ein eher Vorteile für die normierte Strategie. Insgesamt deutet der Vergleich damit darauf hin, dass die aggregierte AOI-Modellierung häufig robustere und in mehreren Multi-AOI-Clustern auch inhaltlich konsistentere Aussagen zum Condition-Effekt ermöglicht, ohne dass daraus eine ausnahmslose Überlegenheit für alle Datensätze abgeleitet werden kann.
-
+<br><br>.
