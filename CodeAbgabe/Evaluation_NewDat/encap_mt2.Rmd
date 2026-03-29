@@ -2,7 +2,14 @@
 title: "encap_mt2"
 output: html_document
 ---
-
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+  echo = FALSE,
+  warning = FALSE,
+  message = FALSE,
+  error = FALSE
+)
+```
 
 ```{r}
 library(here)
