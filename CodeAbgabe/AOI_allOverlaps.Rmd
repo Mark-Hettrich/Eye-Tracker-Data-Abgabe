@@ -160,23 +160,37 @@ make_length_overlap_jitter_plot <- function(df, experiment_name, aoi_value) {
       panel.spacing = unit(0.6, "lines")
     )
 }
+
+all_length_overlap_plots <- list()
+
+for (dataset_name in names(datasets)) {
+  
+  df <- datasets[[dataset_name]]
+  aoi_col <- find_col(df, c("AOI", "aoi"))
+  
+  if (is.null(aoi_col)) next
+  
+  aoi_values <- df %>%
+    dplyr::filter(!is.na(.data[[aoi_col]])) %>%
+    dplyr::pull(.data[[aoi_col]]) %>%
+    unique()
+  
+  for (aoi_i in aoi_values) {
+    
+    plot_name <- paste0(dataset_name, "__AOI_", aoi_i)
+    
+    all_length_overlap_plots[[plot_name]] <- make_length_overlap_jitter_plot(
+      df = df,
+      experiment_name = dataset_name,
+      aoi_value = aoi_i
+    )
+  }
+}
+
 for (nm in names(all_length_overlap_plots)) {
   print(all_length_overlap_plots[[nm]])
-} 
-p_n_bed_aoi2 <- make_length_overlap_jitter_plot(
-  df = n_bed,
-  experiment_name = "n_bed",
-  aoi_value = 2
-)
+}
 
-p_n_bed_aoi2
-ggsave(
-  filename = "n_bed_AOI2_length_overlap_jitter.png",
-  plot = p_n_bed_aoi2,
-  width = 10,
-  height = 5,
-  dpi = 300
-)
 ```
 
 
