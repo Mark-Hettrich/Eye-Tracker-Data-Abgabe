@@ -5,7 +5,7 @@ Die .Rmds wurden so gestaltet, dass ein Knit möglich ist.
 Ausschließlich die Tabellen im knit und dabei beinhaltete Spalten sind von direkter Relevanz. 
 
 
-Die .Rmd Dateien sind nach der Gliederung der Bachelorarbeit benannt. 
+Die .Rmd Dateien sind nach der Gliederung der Bachelorarbeit getrennt. 
 
 Informationen über Anzahl und Varianz der Längenvariablen innerhalb von AOIs und AOI-Clustern, sowie die Overlap Plots finden sich in "AOI_allOverlaps.Rmd"
 
