@@ -1,5 +1,5 @@
 # Eye-Tracker-Data-Abgabe
-Der für die Bachelorarbeit relevante Code befindet sich in Gesamtheit in dem Ordner: CodeAbgabe.
+Der für die Bachelorarbeit relevante Code befindet sich in dem Ordner: "CodeAbgabe".
 
 Die .Rmds wurden so gestaltet, dass ein Knit möglich ist. 
 Ausschließlich die Tabellen im knit und dabei beinhaltete Spalten sind von direkter Relevanz. 
